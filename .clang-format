@@ -9,7 +9,7 @@ BraceWrapping:
 AccessModifierOffset: -4
 AlignConsecutiveDeclarations: true
 AllowShortFunctionsOnASingleLine: Empty
-ColumnLimit: 80
+ColumnLimit: 120
 IndentWidth: 2
 UseTab: Never
 Standard: Cpp17

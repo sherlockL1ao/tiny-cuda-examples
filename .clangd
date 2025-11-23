@@ -1,10 +1,23 @@
 CompileFlags:
+  Add:
+    - -xcuda
+    - --cuda-path=/usr/local/cuda
+    - --cuda-gpu-arch=sm_120
+    - -I/usr/local/cuda/include
+    - -I/workspace/tiny-cuda-examples/.venv/lib/python3.10/site-packages/torch/include
+    - -I/workspace/tiny-cuda-examples/.venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include
+    - -I/usr/include/python3.10
   Remove:
-    - "--generate-dependencies-with-compile"
-    - "--dependency-output"
-    - "--expt-relaxed-constexpr"
-    - "--compiler-options"
-    - "-gencode=arch=compute_89,code=compute_89"
-    - "-gencode=arch=compute_89,code=sm_89"
-    - "-forward-unknown-to-host-compiler"
-    - "-Xcompiler=-fPIE"
+    - -forward-unknown-to-host-compiler
+    - -Xcudafe
+    - --diag_suppress=cc_clobber_ignored,--diag_suppress=field_without_dll_interface,--diag_suppress=base_class_has_different_dll_interface,--diag_suppress=dll_interface_conflict_none_assumed,--diag_suppress=dll_interface_conflict_dllexport_assumed,--diag_suppress=bad_friend_decl
+    - --expt-relaxed-constexpr
+    - --expt-extended-lambda
+    - -gencode
+    - arch=compute_120,code=sm_120
+    - --generate-code=arch=compute_52,code=[compute_52,sm_52]
+    - -Xcompiler=-fPIE
+    - -Xcompiler=-fPIC
+    - -dc
+  Compiler: /usr/bin/clang++-20
+  CompilationDatabase: build

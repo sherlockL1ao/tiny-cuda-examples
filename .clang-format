@@ -1,8 +1,8 @@
 BasedOnStyle: LLVM
 BreakBeforeBraces: Custom
 BraceWrapping:
-  AfterFunction: true
-  AfterClass: true
+  AfterFunction: false
+  AfterClass: false
   AfterControlStatement: MultiLine
   SplitEmptyRecord: false
   SplitEmptyFunction: false
@@ -21,3 +21,4 @@ BreakConstructorInitializers: AfterColon
 AllowAllParametersOfDeclarationOnNextLine: false
 BinPackParameters: false
 BinPackArguments: false
+AllowShortIfStatementsOnASingleLine: WithoutElse

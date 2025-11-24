@@ -3,21 +3,11 @@
 #define TILE_SIZE 32
 
 template <unsigned int warpSize> __device__ __forceinline__ float warpReduceSum(float sum) {
-  if (warpSize >= 32) {
-    sum += __shfl_down_sync(0xffffffff, sum, 16); // 0-16, 1-17, ...
-  }
-  if (warpSize >= 16) {
-    sum += __shfl_down_sync(0xffffffff, sum, 8); // 0-8, 1-9, ...
-  }
-  if (warpSize >= 8) {
-    sum += __shfl_down_sync(0xffffffff, sum, 4); // 0-4, 1-5, ...
-  }
-  if (warpSize >= 4) {
-    sum += __shfl_down_sync(0xffffffff, sum, 2); // 0-2, 1-3, ...
-  }
-  if (warpSize >= 2) {
-    sum += __shfl_down_sync(0xffffffff, sum, 1); // 0-1
-  }
+  if (warpSize >= 32) sum += __shfl_down_sync(0xffffffff, sum, 16); // 0-16, 1-17, ...
+  if (warpSize >= 16) sum += __shfl_down_sync(0xffffffff, sum, 8);  // 0-8, 1-9, ...
+  if (warpSize >= 8) sum += __shfl_down_sync(0xffffffff, sum, 4);   // 0-4, 1-5, ...
+  if (warpSize >= 4) sum += __shfl_down_sync(0xffffffff, sum, 2);   // 0-2, 1-3, ...
+  if (warpSize >= 2) sum += __shfl_down_sync(0xffffffff, sum, 1);   // 0-1
   return sum;
 }
 

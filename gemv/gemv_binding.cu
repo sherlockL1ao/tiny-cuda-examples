@@ -36,7 +36,11 @@ torch::Tensor gemv_launcher(torch::Tensor A, torch::Tensor B) {
 
   dim3 block(32, 4); // 128 threads, 4 warps
   dim3 grid((m + block.y - 1) / block.y);
-  SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+  if (k == 128) {
+    SgemvK128<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+  } else {
+    SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+  }
 
   // Surface CUDA errors (helps debugging when called from Python).
   cudaError_t err = cudaGetLastError();

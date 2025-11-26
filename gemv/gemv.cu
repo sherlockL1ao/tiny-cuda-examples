@@ -126,19 +126,14 @@ torch::Tensor gemv_launcher(torch::Tensor A, torch::Tensor B) {
     dim3 block(32, 4); // 128 threads, 4 warps
     dim3 grid((m + block.y * 2 - 1) / (block.y * 2));
     SgemvK16<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+  } else if (k <= 128) {
+    dim3 block(32, 4); // 128 threads, 4 warps
+    dim3 grid((m + block.y - 1) / block.y);
+    SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
   } else {
     dim3 block(32, 4); // 128 threads, 4 warps
-    if (k == 16) {
-      dim3 grid((m + block.y * 2 - 1) / (block.y * 2));
-      SgemvK16<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-    } else {
-      dim3 grid((m + block.y - 1) / block.y);
-      if (k == 128) {
-        SgemvK128<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-      } else {
-        SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-      }
-    }
+    dim3 grid((m + block.y - 1) / block.y);
+    SgemvK128<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
   }
 
   // Surface CUDA errors (helps debugging when called from Python).

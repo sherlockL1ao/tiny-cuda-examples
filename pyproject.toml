@@ -1,0 +1,29 @@
+[project]
+name = "tiny-cuda-examples"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.2.6",
+    "pybind11>=3.0.1",
+    "ruff>=0.14.6",
+]
+
+[tool.ruff]
+# Match project preference for 2-space indentation in formatter and lint indentation width checks.
+indent-width = 2
+line-length = 100
+
+[tool.ruff.format]
+indent-style = "space"
+quote-style = "double"
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true

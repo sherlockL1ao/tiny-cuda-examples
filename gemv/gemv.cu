@@ -1,4 +1,8 @@
+#include <cuda.h>
 #include <cuda_runtime.h>
+#include <torch/extension.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 
 #define TILE_SIZE 32
 #define WARP_SIZE 32
@@ -71,4 +75,56 @@ __global__ void SgemvK16(const float* __restrict__ A, const float* __restrict__ 
   sum = warpReduceSum<16>(sum);
   if (lane == 0) C[rows] = sum;
   if (lane == 16) C[rows + 1] = sum;
+}
+
+// Simple wrapper that launches gemv on two float32 CUDA tensors.
+// Only float32 is supported to keep the example compact.
+/*
+A: [m, k], B:[1, k], C: [m, 1]
+*/
+torch::Tensor gemv_launcher(torch::Tensor A, torch::Tensor B) {
+  TORCH_CHECK(A.is_cuda(), "A must be a CUDA tensor");
+  TORCH_CHECK(B.is_cuda(), "B must be a CUDA tensor");
+  TORCH_CHECK(A.dtype() == torch::kFloat32, "A must be float32");
+  TORCH_CHECK(B.dtype() == torch::kFloat32, "B must be float32");
+  TORCH_CHECK(A.dim() == 2 && B.dim() == 2, "inputs must be 2D matrices");
+  TORCH_CHECK(A.size(1) == B.size(1), "shape mismatch: A.cols must equal B.cols");
+  TORCH_CHECK(A.device() == B.device(), "A and B must be on the same device");
+  TORCH_CHECK(B.size(0) == 1, "B must be a row vector");
+
+  // Set CUDA device for the duration of this call.
+  c10::cuda::CUDAGuard device_guard(A.device());
+
+  // Respect PyTorch's current stream (per-thread default stream semantics).
+  auto stream = c10::cuda::getCurrentCUDAStream(A.device().index());
+
+  // Make sure data is contiguous for raw pointer access.
+  auto lhs = A.contiguous();
+  auto rhs = B.contiguous();
+  torch::Tensor C = torch::empty({lhs.size(0), 1}, lhs.options());
+
+  const int64_t m = lhs.size(0);
+  const int64_t k = lhs.size(1);
+
+  dim3 block(32, 4); // 128 threads, 4 warps
+  if (k == 16) {
+    dim3 grid((m + block.y * 2 - 1) / (block.y * 2));
+    SgemvK16<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+  } else {
+    dim3 grid((m + block.y - 1) / block.y);
+    if (k == 128) {
+      SgemvK128<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+    } else {
+      SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+    }
+  }
+
+  // Surface CUDA errors (helps debugging when called from Python).
+  cudaError_t err = cudaGetLastError();
+  TORCH_CHECK(err == cudaSuccess, "CUDA kernel launch failed: ", cudaGetErrorString(err));
+
+  // Catch runtime errors from the kernel (useful during development).
+  err = cudaStreamSynchronize(stream);
+  TORCH_CHECK(err == cudaSuccess, "CUDA kernel failed: ", cudaGetErrorString(err));
+  return C;
 }

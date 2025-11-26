@@ -57,7 +57,7 @@ __global__ void SgemvK128(const float* __restrict__ A, const float* __restrict__
   int lane = threadIdx.x; // 0..31
   if (rows >= m) return;
   int   a_idx = rows * k;
-  float sum = 0;
+  float sum = 0.f;
   int   kIteration = k / (WARP_SIZE * 4);
 #pragma unroll
   for (int i = 0; i < kIteration; ++i) {
@@ -68,6 +68,14 @@ __global__ void SgemvK128(const float* __restrict__ A, const float* __restrict__
     sum += a_vals->y * b_vals->y;
     sum += a_vals->z * b_vals->z;
     sum += a_vals->w * b_vals->w;
+  }
+  int remaining = k % (WARP_SIZE * 4);
+  if (remaining > 0) {
+    int offs = kIteration * (WARP_SIZE * 4);
+#pragma unroll
+    for (int i = lane; i + offs < k; i += WARP_SIZE) {
+      sum += A[a_idx + offs + i] * B[offs + i];
+    }
   }
   sum = warpReduceSum<32>(sum);
   if (lane == 0) C[rows] = sum;
@@ -126,7 +134,7 @@ torch::Tensor gemv_launcher(torch::Tensor A, torch::Tensor B) {
     dim3 block(32, 4); // 128 threads, 4 warps
     dim3 grid((m + block.y * 2 - 1) / (block.y * 2));
     SgemvK16<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-  } else if (k <= 128) {
+  } else if (k <= 128 || (k % 4 != 0)) {
     dim3 block(32, 4); // 128 threads, 4 warps
     dim3 grid((m + block.y - 1) / block.y);
     SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);

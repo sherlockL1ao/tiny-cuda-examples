@@ -7,7 +7,8 @@
 #define SMALL_K 8
 #define WARP_SIZE 32
 
-template <unsigned int warp_size> __device__ __forceinline__ float warpReduceSum(float sum) {
+template <unsigned int warp_size>
+__device__ __forceinline__ float warpReduceSum(float sum) {
   if (warp_size >= 32) sum += __shfl_down_sync(0xffffffff, sum, 16); // 0-16, 1-17, ...
   if (warp_size >= 16) sum += __shfl_down_sync(0xffffffff, sum, 8);  // 0-8, 1-9, ...
   if (warp_size >= 8) sum += __shfl_down_sync(0xffffffff, sum, 4);   // 0-4, 1-5, ...

@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Any
 
-import torch
 from torch.utils.cpp_extension import load
 
 cuda_path = Path("gemv.cu")
@@ -15,10 +14,5 @@ def build_extension(cpp_path: Path, cuda_path: Path, module_name: str, verbose: 
 
   return load(name=module_name, sources=[str(cpp_path), str(cuda_path)], verbose=verbose)
 
-cuda_module = build_extension(cuda_path, cpp_path, module_name="gemv_ext")
-
-a1 = torch.randn(15384, 16, device='cuda')
-b1 = torch.randn(1, 16, device='cuda')
-
-c = cuda_module.gemv(a1, b1)
-print(c)
+gemv_module = build_extension(cuda_path, cpp_path, module_name="gemv_ext")
+gemv_cuda = gemv_module.gemv

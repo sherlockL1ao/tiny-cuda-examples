@@ -4,7 +4,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
 
-#define TILE_SIZE 32
+#define SMALL_K 8
 #define WARP_SIZE 32
 
 template <unsigned int warp_size> __device__ __forceinline__ float warpReduceSum(float sum) {
@@ -19,16 +19,23 @@ template <unsigned int warp_size> __device__ __forceinline__ float warpReduceSum
 /*
 A: [m, k], B:[1, k], C: [m, 1]
 */
-__global__ void SgemvNaiveKernel(const float* __restrict__ A, const float* __restrict__ B, float* C, int m, int k) {
+__global__ void SgemvSmallK(const float* __restrict__ A, const float* __restrict__ B, float* C, int m, int k) {
+  __shared__ float shared_B[SMALL_K];
+
   int rows = blockIdx.x * blockDim.x + threadIdx.x;
-  if (rows < m) {
-    int a_idx = rows * k;
-    float sum = 0.f;
-    for (int i = 0; i < k; ++i) {
-      sum += A[a_idx + i] * B[i];
-    }
-    C[rows] = sum;
+  if (rows >= m) return;
+
+  int tid = threadIdx.x;
+  if (tid < k) shared_B[tid] = B[tid]; // load B to shared memory
+  __syncthreads();
+
+  int   a_idx = rows * k;
+  float sum = 0.f;
+#pragma unroll
+  for (int i = 0; i < k; ++i) {
+    sum += A[a_idx + i] * shared_B[i];
   }
+  C[rows] = sum;
 }
 
 __global__ void SgemvK32(const float* __restrict__ A, const float* __restrict__ B, float* C, int m, int k) {
@@ -106,16 +113,22 @@ torch::Tensor gemv_launcher(torch::Tensor A, torch::Tensor B) {
   const int64_t m = lhs.size(0);
   const int64_t k = lhs.size(1);
 
-  dim3 block(32, 4); // 128 threads, 4 warps
-  if (k == 16) {
-    dim3 grid((m + block.y * 2 - 1) / (block.y * 2));
-    SgemvK16<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+  if (k <= SMALL_K) {
+    dim3 block(128);
+    dim3 grid((m + block.x - 1) / block.x);
+    SgemvSmallK<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
   } else {
-    dim3 grid((m + block.y - 1) / block.y);
-    if (k == 128) {
-      SgemvK128<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+    dim3 block(32, 4); // 128 threads, 4 warps
+    if (k == 16) {
+      dim3 grid((m + block.y * 2 - 1) / (block.y * 2));
+      SgemvK16<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
     } else {
-      SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+      dim3 grid((m + block.y - 1) / block.y);
+      if (k == 128) {
+        SgemvK128<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+      } else {
+        SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+      }
     }
   }
 

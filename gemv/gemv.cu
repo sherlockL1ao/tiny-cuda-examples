@@ -78,7 +78,12 @@ __global__ void SgemvK16(const float* __restrict__ A, const float* __restrict__ 
   int lane = threadIdx.x; // 0..31
   if (rows >= m) return;
   int a_idx = rows * k;
-  float sum = A[a_idx + lane] * B[lane % 16];
+  const int half_warp_size = WARP_SIZE / 2;
+  float sum = 0.f;
+  if (lane % half_warp_size < k) {
+    int offs = lane / half_warp_size * (half_warp_size - k);
+    sum += A[a_idx + lane - offs] * B[lane % half_warp_size];
+  }
   sum = warpReduceSum<16>(sum);
   if (lane == 0) C[rows] = sum;
   if (lane == 16) C[rows + 1] = sum;
@@ -117,6 +122,10 @@ torch::Tensor gemv_launcher(torch::Tensor A, torch::Tensor B) {
     dim3 block(128);
     dim3 grid((m + block.x - 1) / block.x);
     SgemvSmallK<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+  } else if (k <= 16) {
+    dim3 block(32, 4); // 128 threads, 4 warps
+    dim3 grid((m + block.y * 2 - 1) / (block.y * 2));
+    SgemvK16<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
   } else {
     dim3 block(32, 4); // 128 threads, 4 warps
     if (k == 16) {

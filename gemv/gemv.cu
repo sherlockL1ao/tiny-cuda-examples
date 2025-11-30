@@ -81,8 +81,44 @@ __global__ void SgemvK64(const float* __restrict__ A, const float* __restrict__ 
   if (lane == 0) C[rows] = sum;
 }
 
+__global__ void SgemvSubwarp8(const float* __restrict__ A, const float* __restrict__ B, float* C, int m, int k) {
+  constexpr int ROWS_PER_WARP = 4;
+  constexpr int THREADS_PER_ROW = WARP_SIZE / ROWS_PER_WARP; // 8
+
+  extern __shared__ float shared_B[];
+
+  int num_threads = blockDim.x * blockDim.y;
+  int tid = threadIdx.y * blockDim.x + threadIdx.x;
+  // Load B into shared memory
+  for (int i = tid; i < k; i += num_threads) {
+    shared_B[i] = B[i];
+  }
+  __syncthreads();
+
+  int warp_id = threadIdx.y;
+  int lane_id = threadIdx.x;
+
+  int row_in_warp = lane_id / THREADS_PER_ROW; // 0..3
+  int lane_in_row = lane_id % THREADS_PER_ROW; // 0..7
+
+  int rows_per_block = blockDim.y * ROWS_PER_WARP;
+  int current_row = blockIdx.x * rows_per_block + warp_id * ROWS_PER_WARP + row_in_warp;
+
+  if (current_row >= m) return;
+
+  const float* row_A = A + current_row * k;
+  float        sum = 0.f;
+
+#pragma unroll
+  for (int i = lane_in_row; i < k; i += THREADS_PER_ROW) {
+    sum += row_A[i] * shared_B[i];
+  }
+  sum = warpReduceSum<THREADS_PER_ROW>(sum);
+  if (lane_in_row == 0) C[current_row] = sum;
+}
+
 // threads (x, y) = (32, 8)
-__global__ void SgemvK128(const float* __restrict__ A, const float* __restrict__ B, float* C, int m, int k) {
+__global__ void SgemvVec4Subwarp8(const float* __restrict__ A, const float* __restrict__ B, float* C, int m, int k) {
   constexpr int ROWS_PER_WARP = 4;
   constexpr int THREADS_PER_ROW = WARP_SIZE / ROWS_PER_WARP; // 8
 
@@ -180,26 +216,15 @@ torch::Tensor gemv_launcher(torch::Tensor A, torch::Tensor B) {
   } else {
     dim3 block(32, 8); // 256threads, 8 warps
     dim3 grid((m + block.y * 4 - 1) / block.y * 4);
-    int shared_mem = k * sizeof(float);
-    SgemvK128<<<grid, block, shared_mem>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-    //  dim3 block(32, 4); // 128 threads, 4 warps
-    // dim3 grid((m + block.y - 1) / block.y);
-    // SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+    int  shared_mem = k * sizeof(float);
+    if (k % 4 != 0) {
+      SgemvSubwarp8<<<grid, block, shared_mem>>>(
+          lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+    } else {
+      SgemvVec4Subwarp8<<<grid, block, shared_mem>>>(
+          lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
+    }
   }
-  // } else if (k <= 128) {
-  //   dim3 block(32, 4); // 128 threads, 4 warps
-  //   dim3 grid((m + block.y - 1) / block.y);
-  //   SgemvK64<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-  // }
-  // else if (k <= 128 || (k % 4 != 0)) {
-  //   dim3 block(32, 4); // 128 threads, 4 warps
-  //   dim3 grid((m + block.y - 1) / block.y);
-  //   SgemvK32<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-  // } else {
-  //   dim3 block(32, 4); // 128 threads, 4 warps
-  //   dim3 grid((m + block.y - 1) / block.y);
-  //   SgemvK128<<<grid, block, 0, stream>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), m, k);
-  // }
 
   // Surface CUDA errors (helps debugging when called from Python).
   cudaError_t err = cudaGetLastError();

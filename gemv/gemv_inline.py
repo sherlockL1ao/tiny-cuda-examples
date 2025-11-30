@@ -24,3 +24,4 @@ def build_extension(cpp_path: Path, cuda_path: Path, module_name: str, verbose: 
 
 gemv_module = build_extension(cuda_path, cpp_path, module_name="gemv_ext")
 gemv_cuda = gemv_module.gemv
+gemv_cublas = gemv_module.gemv_cublas

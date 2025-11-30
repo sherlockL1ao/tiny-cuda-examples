@@ -1,18 +1,18 @@
 BasedOnStyle: LLVM
 BreakBeforeBraces: Custom
 BraceWrapping:
-  AfterFunction: true
-  AfterClass: true
+  AfterFunction: false
+  AfterClass: false
   AfterControlStatement: MultiLine
   SplitEmptyRecord: false
   SplitEmptyFunction: false
 AccessModifierOffset: -4
 AlignConsecutiveDeclarations: true
 AllowShortFunctionsOnASingleLine: Empty
-ColumnLimit: 80
+ColumnLimit: 120
 IndentWidth: 2
 UseTab: Never
-Standard: Cpp17
+Standard: Latest
 PointerAlignment: Left
 NamespaceIndentation: None
 IndentCaseLabels: false
@@ -21,3 +21,5 @@ BreakConstructorInitializers: AfterColon
 AllowAllParametersOfDeclarationOnNextLine: false
 BinPackParameters: false
 BinPackArguments: false
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AlwaysBreakTemplateDeclarations: Yes

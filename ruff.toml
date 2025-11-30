@@ -1,0 +1,44 @@
+indent-width = 2
+preview = true
+target-version = "py310"
+
+lint.select = [
+  "F",  # Pyflakes
+  "W6",
+  "E71",
+  "E72",
+  "E112",   # no-indented-block
+  "E113",   # unexpected-indentation
+  # "E124",
+  "E203",   # whitespace-before-punctuation
+  "E272",   # multiple-spaces-before-keyword
+  "E302",   # expected 2 blank lines, found 0/1
+  "E303",
+  "E304",
+  "E501",   # line-too-long
+  # "E502",
+  "E702",   # multiple-statements-on-one-line-semicolon
+  "E703",   # useless-semicolon
+  "E731",   # lambda-assignment
+  "W191",   # tab-indentation
+  "W291",   # trailing-whitespace
+  "W293",   # blank-line-with-whitespace
+  "UP039",  # unnecessary-class-parentheses
+  "I",      # isort
+]
+
+line-length = 150
+
+exclude = [
+  "docs/",
+  "examples/",
+  "extra/",
+  "src/crossingbits/tools/",
+  "utils/cpp_extension_patch.py",
+  "3rdparty/",
+]
+
+[lint.isort]
+known-first-party = ["crossing", "crossingbits"]
+known-third-party = ["pytest", "loguru", "matplotlib", "setuptools", "numpy", "torch", "transformers", "triton", "accelerate"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]

@@ -61,20 +61,20 @@ def generate_input(m: int, k: int, l: int, seed: int) -> input_t:
   Generate input tensors for NVFP4 block-scaled GEMV.
 
   Args:
-      m: Number of rows in matrix A
-      k: Number of columns in A (and length of vector b)
-      l: Batch size
-      seed: Random seed for reproducibility
+    m: Number of rows in matrix A
+    k: Number of columns in A (and length of vector b)
+    l: Batch size
+    seed: Random seed for reproducibility
 
   Returns:
-      Tuple of (a, b, scale_a, scale_b, c) where:
-          a: [m, k, l] - Input matrix in torch.float4e2m1fn_x2 data type
-          b: [1, k, l] - Input vector in torch.float4e2m1fn_x2 data type
-          scale_a: [m, k, l] - Input scale factors in torch.float8e4m3fn data type
-          scale_b: [1, k, l] - Input scale factors in torch.float8e4m3fn data type
-          scale_a_permuted: [32, 4, rest_m, 4, rest_k, l] - Input scale factors in torch.float8e4m3fn data type
-          scale_b_permuted: [32, 4, rest_n, 4, rest_k, l] - Input scale factors in torch.float8e4m3fn data type
-          c: [m, 1, l] - Output vector in torch.float16 data type
+    Tuple of (a, b, scale_a, scale_b, c) where:
+      a: [m, k, l] - Input matrix in torch.float4e2m1fn_x2 data type
+      b: [1, k, l] - Input vector in torch.float4e2m1fn_x2 data type
+      scale_a: [m, k, l] - Input scale factors in torch.float8e4m3fn data type
+      scale_b: [1, k, l] - Input scale factors in torch.float8e4m3fn data type
+      scale_a_permuted: [32, 4, rest_m, 4, rest_k, l] - Input scale factors in torch.float8e4m3fn data type
+      scale_b_permuted: [32, 4, rest_n, 4, rest_k, l] - Input scale factors in torch.float8e4m3fn data type
+      c: [m, 1, l] - Output vector in torch.float16 data type
   """
   torch.manual_seed(seed)
 

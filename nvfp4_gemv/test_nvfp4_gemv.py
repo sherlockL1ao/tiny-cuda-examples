@@ -6,4 +6,6 @@ data = generate_input(m=128, k=512, l=4, seed=42)
 ref_out = ref_kernel(data)
 
 check_impl = make_match_reference(nvfp4_gemv_cuda, rtol=1e-03, atol=1e-03)
-check_impl(data, ref_out)
+matched, msg = check_impl(data, ref_out)
+
+if not matched: print(msg)

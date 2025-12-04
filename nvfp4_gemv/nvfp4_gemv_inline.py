@@ -61,11 +61,7 @@ def nvfp4_gemv_cuda(
     sources=[cpp_inline, cuda_inline],
   )
   a_ref, b_ref, sfa_ref_cpu, sfb_ref_cpu, _, _, c_ref = data
-  _, _, l = c_ref.shape
   # [128, k, l] -> [1, k, l]
-  b_ref = b_ref[0:1, ...]
-  scale_a = sfa_ref_cpu
   # [128, k/vec_size, l] -> [1, k/vec_size, l]
-  scale_b = sfb_ref_cpu[0:1, ...]
-  nvfp4_gemv_module.nvfp4_gemv(a_ref, b_ref, scale_a.cuda(), scale_b.cuda(), c_ref)
+  nvfp4_gemv_module.nvfp4_gemv(a_ref, b_ref, sfa_ref_cpu.cuda(), sfb_ref_cpu.cuda(), c_ref)
   return c_ref

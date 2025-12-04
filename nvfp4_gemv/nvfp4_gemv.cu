@@ -30,7 +30,7 @@ __global__ void Nvfp4gemvNaive(
     const int l) {
   int current_row = blockIdx.x * blockDim.x + threadIdx.x;
   int current_batch = blockIdx.y;
-  if (current_row >= m || current_batch >= l) return;
+  if (current_row >= m) return;
 
   const int k_packed = k / PACK_SIZE;
   const int stride_l = m * k_packed;
@@ -40,9 +40,10 @@ __global__ void Nvfp4gemvNaive(
   float     acc = 0.f;
   for (int i = 0; i < k_packed; ++i) {
     int  a_off = current_batch * stride_l + current_row * k_packed + i;
-    int  b_off = current_batch * k_packed + i;
-    auto a_packed = *(static_cast<const __nv_fp4x2_e2m1*>(a) + a_off);
+    int  b_off = current_batch * 128 * k_packed + i;
+
     // convert packed fp4x2 → half2
+    auto        a_packed = *(static_cast<const __nv_fp4x2_e2m1*>(a) + a_off);
     __half2_raw a_h2_raw = __nv_cvt_fp4x2_to_halfraw2(a_packed.__x, __NV_E2M1);
     __half2     a_h2 = *reinterpret_cast<__half2*>(&a_h2_raw);
 
@@ -55,18 +56,18 @@ __global__ void Nvfp4gemvNaive(
     // 2. Convert to float and Add
     float2 prod_f2 = __half22float2(prod_half2);
     acc += (prod_f2.x + prod_f2.y);
-    if (i % SF_PACK_SIZE == 0) {
+    if ((i + 1) % SF_PACK_SIZE == 0) {
       // finish one group
       int        group_idx = i / SF_PACK_SIZE;
-      int        sfa_off = current_batch * sfa_stride_l + current_row * sf_k + group_idx;
-      int        sfb_off = current_batch * sf_k + group_idx;
+      int        sfa_off = current_batch * sf_k * m + current_row * sf_k + group_idx;
+      int        sfb_off = current_batch * sf_k * 128 + group_idx;
       auto       scale_a_val = *(static_cast<const __nv_fp8_e4m3*>(scale_a) + sfa_off);
       auto       scale_b_val = *(static_cast<const __nv_fp8_e4m3*>(scale_b) + sfb_off);
       __half_raw sfa_half_raw = __nv_cvt_fp8_to_halfraw(scale_a_val.__x, __NV_E4M3);
       float      sfa_f = __half2float(*reinterpret_cast<__half*>(&sfa_half_raw));
       __half_raw sfb_half_raw = __nv_cvt_fp8_to_halfraw(scale_b_val.__x, __NV_E4M3);
       float      sfb_f = __half2float(*reinterpret_cast<__half*>(&sfb_half_raw));
-      sum += acc * sfa_f * sfb_f;
+      sum += (acc * sfa_f * sfb_f);
       acc = 0.f;
     }
   }
@@ -158,7 +159,7 @@ torch::Tensor nvfp4_gemv_launcher(
     const torch::Tensor& scale_b,
     torch::Tensor        out) {
 
-  const int m = a.size(0), k = a.size(1), l = a.size(2);
+  const int m = a.size(0), k = a.size(1) * PACK_SIZE, l = a.size(2);
 
   dim3 block(256);
   dim3 grid((m + block.x - 1) / block.x, l);

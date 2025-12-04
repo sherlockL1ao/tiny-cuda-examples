@@ -35,7 +35,6 @@ __global__ void Nvfp4gemvNaive(
   const int k_packed = k / PACK_SIZE;
   const int stride_l = m * k_packed;
   const int sf_k = k / SF_VEC_SIZE;
-  const int sfa_stride_l = m * sf_k;
   float     sum = 0.f;
   float     acc = 0.f;
   for (int i = 0; i < k_packed; ++i) {
@@ -85,7 +84,7 @@ __global__ void Nvfp4GemvAsmLoad(
     const int l) {
   int current_row = blockIdx.x * blockDim.x + threadIdx.x;
   int current_batch = blockIdx.y;
-  if (current_row >= m || current_batch >= l) return;
+  if (current_row >= m) return;
 
   auto          a_ptr = static_cast<const __nv_fp4x2_e2m1*>(a);
   auto          b_ptr = static_cast<const __nv_fp4x2_e2m1*>(b);
@@ -96,7 +95,7 @@ __global__ void Nvfp4GemvAsmLoad(
   __nv_fp8_e4m3 sfa_rmem[1];
   __nv_fp8_e4m3 sfb_rmem[1];
 
-  const int k_packed = k / (PACK_SIZE * VEC_SIZE);
+  const int k_packed = k / PACK_SIZE;
   const int stride_l = m * k_packed;
   const int sf_k = k / SF_VEC_SIZE;
   const int sfa_stride_l = m * sf_k;
@@ -104,17 +103,17 @@ __global__ void Nvfp4GemvAsmLoad(
   float     acc = 0.f;
   {
     int a_off = current_batch * stride_l + current_row * k_packed;
-    int b_off = current_batch * k_packed;
+    int b_off = current_batch * 128 * k_packed;
     a_ptr += a_off;
     b_ptr += b_off;
 
     int sfa_off = current_batch * sfa_stride_l + current_row * sf_k;
-    int sfb_off = current_batch * sf_k;
+    int sfb_off = current_batch * 128 * sf_k;
     sfa_ptr += sfa_off;
     sfb_ptr += sfb_off;
   }
 #pragma unroll
-  for (int i = 0; i < k_packed; ++i) {
+  for (int i = 0; i < (k_packed / VEC_SIZE); ++i) {
     ldca_i16(a_rmem, a_ptr + i * VEC_SIZE);
     ldcs_i16(b_rmem, b_ptr + i * VEC_SIZE);
 
@@ -136,9 +135,9 @@ __global__ void Nvfp4GemvAsmLoad(
       acc += (prod_f2.x + prod_f2.y);
     }
 
-    if (i % (SF_PACK_SIZE * VEC_SIZE) == 0) {
+    if ((i + 1) % (SF_PACK_SIZE / VEC_SIZE) == 0) {
       // finish one block
-      int group_idx = i / (SF_PACK_SIZE * VEC_SIZE);
+      int group_idx = i / (SF_PACK_SIZE / VEC_SIZE);
       sfa_rmem[0] = *(sfa_ptr + group_idx);
       sfb_rmem[0] = *(sfb_ptr + group_idx);
       __half_raw sfa_half_raw = __nv_cvt_fp8_to_halfraw(sfa_rmem->__x, __NV_E4M3);

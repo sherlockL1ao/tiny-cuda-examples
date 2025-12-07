@@ -10,22 +10,20 @@
 #define SF_PACK_SIZE (SF_VEC_SIZE / PACK_SIZE)
 
 __device__ __forceinline__ void fp4x8_to_fp16x2x4(uint32_t* out, uint32_t in) {
-  asm volatile(
-    "{\n\t"
-    ".reg .b8 tmp0, tmp1, tmp2, tmp3;\n\t"
-    "mov.b32 {tmp0, tmp1, tmp2, tmp3}, %4; // unpack 32-bit register to 4x fp4x2\n\t"
-    "cvt.rn.f16x2.e2m1x2 %0, tmp0;\n\t"
-    "cvt.rn.f16x2.e2m1x2 %1, tmp1;\n\t"
-    "cvt.rn.f16x2.e2m1x2 %2, tmp2;\n\t"
-    "cvt.rn.f16x2.e2m1x2 %3, tmp3;\n\t"
-    "}"
-    : "=r"(out[0]), "=r"(out[1]), "=r"(out[2]), "=r"(out[3])
-    : "r"(in)
-  );
+  asm volatile("{\n\t"
+               ".reg .b8 tmp0, tmp1, tmp2, tmp3;\n\t"
+               "mov.b32 {tmp0, tmp1, tmp2, tmp3}, %4; // unpack 32-bit register to 4x fp4x2\n\t"
+               "cvt.rn.f16x2.e2m1x2 %0, tmp0;\n\t"
+               "cvt.rn.f16x2.e2m1x2 %1, tmp1;\n\t"
+               "cvt.rn.f16x2.e2m1x2 %2, tmp2;\n\t"
+               "cvt.rn.f16x2.e2m1x2 %3, tmp3;\n\t"
+               "}"
+               : "=r"(out[0]), "=r"(out[1]), "=r"(out[2]), "=r"(out[3])
+               : "r"(in));
 }
 
 __device__ __forceinline__ void fp8x2_to_fp16x2(half2* out, uint16_t in) {
-  uint32_t* out_i32 = reinterpret_cast<uint32_t *>(out);
+  uint32_t* out_i32 = reinterpret_cast<uint32_t*>(out);
   asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n" : "=r"(out_i32[0]) : "h"(in));
 }
 
@@ -41,14 +39,14 @@ __device__ __forceinline__ void ldca_i16(uint16_t* dst, const void* src) {
 
 __device__ __forceinline__ void ldcs_i32x4(uint32_t* dst, const void* src) {
   asm volatile("ld.global.L1::no_allocate.v4.b32 {%0, %1, %2, %3}, [%4];"
-              : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
-              : "l"(src));
+               : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
+               : "l"(src));
 }
 
 __device__ __forceinline__ void ldca_i32x4(uint32_t* dst, const void* src) {
   asm volatile("ld.global.L1::evict_last.v4.b32 {%0, %1, %2, %3}, [%4];"
-              : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
-              : "l"(src));
+               : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
+               : "l"(src));
 }
 
 __global__ void Nvfp4gemvNaive(
@@ -70,8 +68,8 @@ __global__ void Nvfp4gemvNaive(
   float     sum = 0.f;
   float     acc = 0.f;
   for (int i = 0; i < k_packed; ++i) {
-    int  a_off = current_batch * stride_l + current_row * k_packed + i;
-    int  b_off = current_batch * 128 * k_packed + i;
+    int a_off = current_batch * stride_l + current_row * k_packed + i;
+    int b_off = current_batch * 128 * k_packed + i;
 
     // convert packed fp4x2 → half2
     auto        a_packed = *(static_cast<const __nv_fp4x2_e2m1*>(a) + a_off);
@@ -122,8 +120,8 @@ __global__ void Nvfp4GemvAsmLoad(
   auto          b_ptr = static_cast<const __nv_fp4x2_e2m1*>(b);
   auto          sfa_ptr = static_cast<const __nv_fp8_e4m3*>(scale_a);
   auto          sfb_ptr = static_cast<const __nv_fp8_e4m3*>(scale_b);
-  uint16_t       a_rmem[1];
-  uint16_t       b_rmem[1];
+  uint16_t      a_rmem[1];
+  uint16_t      b_rmem[1];
   __nv_fp8_e4m3 sfa_rmem[1];
   __nv_fp8_e4m3 sfb_rmem[1];
 
@@ -274,7 +272,7 @@ __global__ void Nvfp4GemvAsmLoadv2(
   *(static_cast<__half*>(out) + current_batch * m + current_row) = __float2half(sum);
 }
 
-torch::Tensor nvfp4_gemv_launcher(
+torch::Tensor nvfp4_gemv_naive_launcher(
     const torch::Tensor& a, // mat
     const torch::Tensor& b, // vec
     const torch::Tensor& scale_a,
@@ -285,8 +283,39 @@ torch::Tensor nvfp4_gemv_launcher(
 
   dim3 block(256);
   dim3 grid((m + block.x - 1) / block.x, l);
-  // Nvfp4gemvNaive<<<grid, block>>>(
-  //     a.data_ptr(), b.data_ptr(), scale_a.data_ptr(), scale_b.data_ptr(), out.data_ptr(), m, k, l);
+  Nvfp4gemvNaive<<<grid, block>>>(
+      a.data_ptr(), b.data_ptr(), scale_a.data_ptr(), scale_b.data_ptr(), out.data_ptr(), m, k, l);
+  return out;
+}
+
+torch::Tensor nvfp4_gemv_asm_launcher(
+    const torch::Tensor& a, // mat
+    const torch::Tensor& b, // vec
+    const torch::Tensor& scale_a,
+    const torch::Tensor& scale_b,
+    torch::Tensor        out) {
+
+  const int m = a.size(0), k = a.size(1) * PACK_SIZE, l = a.size(2);
+
+  dim3 block(256);
+  dim3 grid((m + block.x - 1) / block.x, l);
+  Nvfp4GemvAsmLoad<<<grid, block>>>(
+      a.data_ptr(), b.data_ptr(), scale_a.data_ptr(), scale_b.data_ptr(), out.data_ptr(), m, k, l);
+
+  return out;
+}
+
+torch::Tensor nvfp4_gemv_asmv2_launcher(
+    const torch::Tensor& a, // mat
+    const torch::Tensor& b, // vec
+    const torch::Tensor& scale_a,
+    const torch::Tensor& scale_b,
+    torch::Tensor        out) {
+
+  const int m = a.size(0), k = a.size(1) * PACK_SIZE, l = a.size(2);
+
+  dim3 block(256);
+  dim3 grid((m + block.x - 1) / block.x, l);
   Nvfp4GemvAsmLoadv2<<<grid, block>>>(
       a.data_ptr(), b.data_ptr(), scale_a.data_ptr(), scale_b.data_ptr(), out.data_ptr(), m, k, l);
 

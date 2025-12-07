@@ -30,11 +30,19 @@ torch::Tensor nvfp4_gemv_naive_launcher(
     const torch::Tensor& scale_b,
     torch::Tensor out);
 
+torch::Tensor nvfp4_gemv_asmload_warp_launcher(
+    const torch::Tensor& a,
+    const torch::Tensor& b,
+    const torch::Tensor& scale_a,
+    const torch::Tensor& scale_b,
+    torch::Tensor        out);
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("nvfp4_gemv_asm", &nvfp4_gemv_asm_launcher, "Nvfp4 GEMV ASM (CUDA)");
   m.def("nvfp4_gemv_asmv2", &nvfp4_gemv_asmv2_launcher, "Nvfp4 GEMV ASMV2 (CUDA)");
   m.def("nvfp4_gemv_naive", &nvfp4_gemv_naive_launcher, "Nvfp4 GEMV Naive (CUDA)");
+  m.def("nvfp4_gemv_asmload_warp", &nvfp4_gemv_asmload_warp_launcher, "Nvfp4 GEMV ASM Load Warp (CUDA)");
 }
 """
 
@@ -88,4 +96,10 @@ def nvfp4_gemv_asm(data: input_t) -> output_t:
 def nvfp4_gemv_asmv2(data: input_t) -> output_t:
     a_ref, b_ref, sfa_ref_cpu, sfb_ref_cpu, _, _, c_ref = data
     nvfp4_gemv_module.nvfp4_gemv_asmv2(a_ref, b_ref, sfa_ref_cpu.cuda(), sfb_ref_cpu.cuda(), c_ref)
+    return c_ref
+
+
+def nvfp4_gemv_asm_warp(data: input_t) -> output_t:
+    a_ref, b_ref, sfa_ref_cpu, sfb_ref_cpu, _, _, c_ref = data
+    nvfp4_gemv_module.nvfp4_gemv_asmload_warp(a_ref, b_ref, sfa_ref_cpu.cuda(), sfb_ref_cpu.cuda(), c_ref)
     return c_ref

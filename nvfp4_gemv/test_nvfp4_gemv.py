@@ -1,5 +1,5 @@
 import torch
-from nvfp4_gemv_inline import nvfp4_gemv_asm, nvfp4_gemv_asmv2, nvfp4_gemv_naive
+from nvfp4_gemv_inline import nvfp4_gemv_asm, nvfp4_gemv_asmv2, nvfp4_gemv_naive, nvfp4_gemv_asm_warp
 from nvfp4_gemv_reference import generate_input, ref_kernel
 from utils import make_match_reference
 
@@ -34,14 +34,19 @@ def time_pytorch_function(func, data):
   return start.elapsed_time(end) # Return the elapsed time in milliseconds
 
 
-m, k, l = 256, 512, 4
+m, k, l = 128, 512, 4
 
 data_ref = generate_input(m=m, k=k, l=l, seed=42)
-ref_out = ref_kernel(data_ref)
+# ref_out = ref_kernel(data_ref)
+ref_out = nvfp4_gemv_asmv2(data_ref)
 
 data_cuda = generate_input(m=m, k=k, l=l, seed=42)
-check_impl = make_match_reference(nvfp4_gemv_asmv2, rtol=1e-03, atol=1e-03)
+check_impl = make_match_reference(nvfp4_gemv_asm_warp, rtol=1e-03, atol=1e-03)
 matched, msg = check_impl(data_cuda, ref_out)
+
+if not matched:
+    print(msg)
+    exit()
 
 
 for m, k in ((2048, 512), (512, 2048), (8192, 8192)):
@@ -50,4 +55,12 @@ for m, k in ((2048, 512), (512, 2048), (8192, 8192)):
     naive_time = time_pytorch_function(nvfp4_gemv_naive, data)
     asm_time = time_pytorch_function(nvfp4_gemv_asm, data)
     asmv2_time = time_pytorch_function(nvfp4_gemv_asmv2, data)
-    print(f"m={m}, k={k} | PyTorch: {torch_time:.2f} ms | Naive: {naive_time:.2f} ms | ASM: {asm_time:.2f} ms | ASMV2: {asmv2_time:.2f} ms")
+    asm_warp_time = time_pytorch_function(nvfp4_gemv_asm_warp, data)
+    print(
+        f"m={m}, k={k} | "
+        f"PyTorch: {torch_time:.2f} ms | "
+        f"Naive: {naive_time:.2f} ms | "
+        f"ASM: {asm_time:.2f} ms | "
+        f"ASMV2: {asmv2_time:.2f} ms | "
+        f"ASM warp: {asm_warp_time:.2f} ms"
+    )

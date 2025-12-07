@@ -9,6 +9,25 @@
 #define VEC_SIZE 2
 #define SF_PACK_SIZE (SF_VEC_SIZE / PACK_SIZE)
 
+#define WARP_SIZE 32
+#define ROWS_PER_WARP 4
+#define THREADS_PER_ROW (WARP_SIZE / ROWS_PER_WARP)
+#define FP4_VEC_SIZE 32
+#define FP4_PACK_VEC_SIZE (FP4_VEC_SIZE / PACK_SIZE)
+#define SF_LOAD_SIZE 2
+#define TILE_K (FP4_VEC_SIZE * THREADS_PER_ROW / PACK_SIZE)
+
+template <unsigned int warp_size>
+__device__ __forceinline__ float warp_reduce_sum(float sum) {
+  if (warp_size >= 32) sum += __shfl_down_sync(0xffffffff, sum, 16);
+  if (warp_size >= 16) sum += __shfl_down_sync(0xffffffff, sum, 8);
+  if (warp_size >= 8) sum += __shfl_down_sync(0xffffffff, sum, 4);
+  if (warp_size >= 4) sum += __shfl_down_sync(0xffffffff, sum, 2);
+  if (warp_size >= 2) sum += __shfl_down_sync(0xffffffff, sum, 1);
+  return sum;
+}
+
+
 __device__ __forceinline__ void fp4x8_to_fp16x2x4(uint32_t* out, uint32_t in) {
   asm volatile("{\n\t"
                ".reg .b8 tmp0, tmp1, tmp2, tmp3;\n\t"
@@ -27,12 +46,12 @@ __device__ __forceinline__ void fp8x2_to_fp16x2(half2* out, uint16_t in) {
   asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n" : "=r"(out_i32[0]) : "h"(in));
 }
 
-// Load Cache All
+// Load Cache streaming
 __device__ __forceinline__ void ldcs_i16(uint16_t* dst, const void* src) {
   asm volatile("ld.global.L1::no_allocate.b16 %0, [%1];" : "=h"(dst[0]) : "l"(src));
 }
 
-// Load Cache Streaming
+// Load Cache All
 __device__ __forceinline__ void ldca_i16(uint16_t* dst, const void* src) {
   asm volatile("ld.global.L1::evict_last.b16 %0, [%1];" : "=h"(dst[0]) : "l"(src));
 }
@@ -142,10 +161,10 @@ __global__ void Nvfp4GemvAsmLoad(
     sfa_ptr += sfa_off;
     sfb_ptr += sfb_off;
   }
-#pragma unroll
+#pragma unroll 4
   for (int i = 0; i < (k_packed / VEC_SIZE); ++i) {
-    ldca_i16(a_rmem, a_ptr + i * VEC_SIZE);
-    ldcs_i16(b_rmem, b_ptr + i * VEC_SIZE);
+    ldcs_i16(a_rmem, a_ptr + i * VEC_SIZE);
+    ldca_i16(b_rmem, b_ptr + i * VEC_SIZE);
 
     // unpack
     auto a_fp4 = reinterpret_cast<const __nv_fp4x2_e2m1*>(a_rmem);
@@ -194,7 +213,6 @@ __global__ void Nvfp4GemvAsmLoadv2(
   int current_batch = blockIdx.y;
   if (current_row >= m) return;
 
-  const int FP4_VEC_SIZE = 32;
   const int DATA_REG_COUNT = 4;
   uint32_t  a_rmem_fp4[DATA_REG_COUNT];
   uint32_t  b_rmem_fp4[DATA_REG_COUNT];
@@ -231,7 +249,7 @@ __global__ void Nvfp4GemvAsmLoadv2(
 
   float sum = 0.f;
   half2 acc[2] = {__float2half2_rn(0.0f), __float2half2_rn(0.0f)};
-#pragma unroll
+
   for (int i = 0; i < (k / FP4_VEC_SIZE); ++i) {
     ldcs_i32x4(a_rmem_fp4, a_ptr + i * stride_i);
     ldca_i32x4(b_rmem_fp4, b_ptr + i * stride_i);
@@ -255,8 +273,7 @@ __global__ void Nvfp4GemvAsmLoadv2(
         __half2_raw b_h2_raw = *reinterpret_cast<__half2_raw*>(&b_rmem_half[j]);
         half2       b_h2 = *reinterpret_cast<half2*>(&b_h2_raw);
 
-        __half2 prod_half2 = __hmul2(a_h2, b_h2);
-        acc[m / 2] = __hadd2(acc[m / 2], prod_half2);
+        acc[m / 2] = __hfma2(a_h2, b_h2, acc[m / 2]);
       }
     }
 
@@ -270,6 +287,101 @@ __global__ void Nvfp4GemvAsmLoadv2(
     acc[1] = __float2half2_rn(0.0f);
   }
   *(static_cast<__half*>(out) + current_batch * m + current_row) = __float2half(sum);
+}
+
+__global__ void Nvfp4GemvAsmLoadWarp(
+    const void* __restrict__ a,
+    const void* __restrict__ b,
+    const void* __restrict__ scale_a,
+    const void* __restrict__ scale_b,
+    void* __restrict__ out,
+    const int m,
+    const int k,
+    const int l) {
+  int warp_id = threadIdx.y, lane_id = threadIdx.x;
+
+  int row_in_warp = lane_id / THREADS_PER_ROW; // 0..3
+  int lane_in_row = lane_id % THREADS_PER_ROW; // 0..7
+
+  int rows_per_block = blockDim.y * ROWS_PER_WARP;
+  int current_row = blockIdx.x * rows_per_block + warp_id * ROWS_PER_WARP + row_in_warp;
+  int current_batch = blockIdx.y;
+  if (current_row >= m) return;
+
+  auto a_ptr = static_cast<const __nv_fp4x2_e2m1*>(a);
+  auto b_ptr = static_cast<const __nv_fp4x2_e2m1*>(b);
+  auto sfa_ptr = static_cast<const __nv_fp8_e4m3*>(scale_a);
+  auto sfb_ptr = static_cast<const __nv_fp8_e4m3*>(scale_b);
+
+  const int k_packed = k / PACK_SIZE;
+  {
+    int a_off = current_batch * m * k_packed + current_row * k_packed;
+    int b_off = current_batch * 128 * k_packed;
+    a_ptr += a_off;
+    b_ptr += b_off;
+
+    int sf_k = k / SF_VEC_SIZE;
+    int sfa_off = current_batch * m * sf_k + current_row * sf_k;
+    int sfb_off = current_batch * 128 * sf_k;
+    sfa_ptr += sfa_off;
+    sfb_ptr += sfb_off;
+  }
+
+  uint32_t a_rmem_fp4[4];
+  uint32_t a_rmem_half[4];
+  uint32_t b_rmem_fp4[4];
+  uint32_t b_rmem_half[4];
+  uint16_t sfa_rmem_fp8;
+  uint16_t sfb_rmem_fp8;
+  __half2  sfa_rmem_half;
+  __half2  sfb_rmem_half;
+
+  float sum = 0.f;
+  half2 acc[2] = {__float2half2_rn(0.0f), __float2half2_rn(0.0f)};
+
+  const int     num_fp4_vecs = k / FP4_VEC_SIZE;
+  constexpr int DATA_REG_COUNT = 4;
+
+#pragma unroll 4
+  for (int i = lane_in_row; i < num_fp4_vecs; i += THREADS_PER_ROW) {
+    ldcs_i32x4(a_rmem_fp4, a_ptr + i * FP4_PACK_VEC_SIZE);
+    ldca_i32x4(b_rmem_fp4, b_ptr + i * FP4_PACK_VEC_SIZE);
+    ldcs_i16(&sfa_rmem_fp8, sfa_ptr + i * SF_LOAD_SIZE);
+    ldca_i16(&sfb_rmem_fp8, sfb_ptr + i * SF_LOAD_SIZE);
+    fp8x2_to_fp16x2(&sfa_rmem_half, sfa_rmem_fp8);
+    fp8x2_to_fp16x2(&sfb_rmem_half, sfb_rmem_fp8);
+
+    for (int m = 0; m < DATA_REG_COUNT; ++m) {
+      // unpack fp4x8 -> fp16x2x4
+      fp4x8_to_fp16x2x4(a_rmem_half, a_rmem_fp4[m]);
+      fp4x8_to_fp16x2x4(b_rmem_half, b_rmem_fp4[m]);
+
+      // compute
+#pragma unroll
+      for (int j = 0; j < 4; ++j) {
+        __half2_raw a_h2_raw = *reinterpret_cast<__half2_raw*>(&a_rmem_half[j]);
+        half2       a_h2 = *reinterpret_cast<half2*>(&a_h2_raw);
+
+        __half2_raw b_h2_raw = *reinterpret_cast<__half2_raw*>(&b_rmem_half[j]);
+        half2       b_h2 = *reinterpret_cast<half2*>(&b_h2_raw);
+
+        acc[m / 2] = __hfma2(a_h2, b_h2, acc[m / 2]);
+      }
+    }
+
+    half2 acc_h2 = __halves2half2(__hadd(acc[0].x, acc[0].y), __hadd(acc[1].x, acc[1].y));
+    half2 tmp = __hmul2(acc_h2, sfa_rmem_half);
+    tmp = __hmul2(tmp, sfb_rmem_half);
+
+    sum += __half2float(tmp.x) + __half2float(tmp.y);
+
+    acc[0] = __float2half2_rn(0.0f);
+    acc[1] = __float2half2_rn(0.0f);
+  }
+  sum = warp_reduce_sum<THREADS_PER_ROW>(sum);
+  if (lane_in_row == 0) {
+    *(static_cast<__half*>(out) + current_batch * m + current_row) = __float2half(sum);
+  }
 }
 
 torch::Tensor nvfp4_gemv_naive_launcher(
@@ -317,6 +429,23 @@ torch::Tensor nvfp4_gemv_asmv2_launcher(
   dim3 block(256);
   dim3 grid((m + block.x - 1) / block.x, l);
   Nvfp4GemvAsmLoadv2<<<grid, block>>>(
+      a.data_ptr(), b.data_ptr(), scale_a.data_ptr(), scale_b.data_ptr(), out.data_ptr(), m, k, l);
+
+  return out;
+}
+
+torch::Tensor nvfp4_gemv_asmload_warp_launcher(
+    const torch::Tensor& a,
+    const torch::Tensor& b,
+    const torch::Tensor& scale_a,
+    const torch::Tensor& scale_b,
+    torch::Tensor        out) {
+
+  const int m = a.size(0), k = a.size(1) * PACK_SIZE, l = a.size(2);
+
+  dim3 block(32, 8); // 8 warps per block
+  dim3 grid((m + block.y * ROWS_PER_WARP - 1) / (block.y * ROWS_PER_WARP), l);
+  Nvfp4GemvAsmLoadWarp<<<grid, block>>>(
       a.data_ptr(), b.data_ptr(), scale_a.data_ptr(), scale_b.data_ptr(), out.data_ptr(), m, k, l);
 
   return out;

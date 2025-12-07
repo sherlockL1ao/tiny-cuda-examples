@@ -1,5 +1,5 @@
 import torch
-from nvfp4_gemv_inline import nvfp4_gemv_asm, nvfp4_gemv_asmv2, nvfp4_gemv_naive, nvfp4_gemv_asm_warp
+from nvfp4_gemv_inline import nvfp4_gemv_asm, nvfp4_gemv_asm_warp, nvfp4_gemv_asmv2, nvfp4_gemv_naive
 from nvfp4_gemv_reference import generate_input, ref_kernel
 from utils import make_match_reference
 

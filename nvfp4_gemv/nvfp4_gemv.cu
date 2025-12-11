@@ -336,7 +336,7 @@ __global__ void Nvfp4GemvAsmLoadWarp(
   __half2  sfa_rmem_half;
   __half2  sfb_rmem_half;
 
-  float sum = 0.f;
+  float master_acc = 0.f;
   half2 acc[2] = {__float2half2_rn(0.0f), __float2half2_rn(0.0f)};
 
   const int     num_fp4_vecs = k / FP4_VEC_SIZE;
@@ -350,6 +350,9 @@ __global__ void Nvfp4GemvAsmLoadWarp(
     ldca_i16(&sfb_rmem_fp8, sfb_ptr + i * SF_LOAD_SIZE);
     fp8x2_to_fp16x2(&sfa_rmem_half, sfa_rmem_fp8);
     fp8x2_to_fp16x2(&sfb_rmem_half, sfb_rmem_fp8);
+
+    // pre-compute scale factor
+    __half2_raw sf_prod = __hmul2(sfa_rmem_half, sfb_rmem_half);
 
     for (int m = 0; m < DATA_REG_COUNT; ++m) {
       // unpack fp4x8 -> fp16x2x4
@@ -369,18 +372,18 @@ __global__ void Nvfp4GemvAsmLoadWarp(
       }
     }
 
-    half2 acc_h2 = __halves2half2(__hadd(acc[0].x, acc[0].y), __hadd(acc[1].x, acc[1].y));
-    half2 tmp = __hmul2(acc_h2, sfa_rmem_half);
-    tmp = __hmul2(tmp, sfb_rmem_half);
+    __half_raw group0 = __hadd(acc[0].x, acc[0].y);
+    __half_raw group1 = __hadd(acc[1].x, acc[1].y);
 
-    sum += __half2float(tmp.x) + __half2float(tmp.y);
+    asm volatile("fma.rn.f32.f16 %0, %1, %2, %0;" : "+f"(master_acc) : "h"(group0.x), "h"(sf_prod.x));
+    asm volatile("fma.rn.f32.f16 %0, %1, %2, %0;" : "+f"(master_acc) : "h"(group1.x), "h"(sf_prod.y));
 
     acc[0] = __float2half2_rn(0.0f);
     acc[1] = __float2half2_rn(0.0f);
   }
-  sum = warp_reduce_sum<THREADS_PER_ROW>(sum);
+  master_acc = warp_reduce_sum<THREADS_PER_ROW>(master_acc);
   if (lane_in_row == 0) {
-    *(static_cast<__half*>(out) + current_batch * m + current_row) = __float2half(sum);
+    *(static_cast<__half*>(out) + current_batch * m + current_row) = __float2half(master_acc);
   }
 }
 

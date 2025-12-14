@@ -5,6 +5,7 @@ import torch
 from torch.utils.cpp_extension import load_inline
 
 cuda_path = Path("nvfp4_gemv.cu")
+cuda_path_v1 = Path("nvfp4_gemv_v1.cu")
 
 cpp_code = """
 #include <torch/extension.h>
@@ -37,12 +38,20 @@ torch::Tensor nvfp4_gemv_asmload_warp_launcher(
     const torch::Tensor& scale_b,
     torch::Tensor        out);
 
+torch::Tensor nvfp4_gemv_reg_tile_launcher(
+    const torch::Tensor& a,
+    const torch::Tensor& b,
+    const torch::Tensor& scale_a,
+    const torch::Tensor& scale_b,
+    torch::Tensor        out);
+
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("nvfp4_gemv_asm", &nvfp4_gemv_asm_launcher, "Nvfp4 GEMV ASM (CUDA)");
   m.def("nvfp4_gemv_asmv2", &nvfp4_gemv_asmv2_launcher, "Nvfp4 GEMV ASMV2 (CUDA)");
   m.def("nvfp4_gemv_naive", &nvfp4_gemv_naive_launcher, "Nvfp4 GEMV Naive (CUDA)");
   m.def("nvfp4_gemv_asmload_warp", &nvfp4_gemv_asmload_warp_launcher, "Nvfp4 GEMV ASM Load Warp (CUDA)");
+  m.def("nvfp4_gemv_reg_tile", &nvfp4_gemv_reg_tile_launcher, "Nvfp4 GEMV Reg Tile (CUDA)");
 }
 """
 
@@ -55,7 +64,7 @@ def build_extension(cpp_path: str, cuda_path: Path, module_name: str, verbose: b
     return load_inline(
         name=module_name,
         cpp_sources=[cpp_path],
-        cuda_sources=[cuda_path.read_text()],
+        cuda_sources=[cuda_path.read_text(), cuda_path_v1.read_text()],
         # Flags for the C++ wrapper
         # extra_cflags=["-g", "-O0"],
         # Flags for the NVCC compiler
@@ -102,4 +111,10 @@ def nvfp4_gemv_asmv2(data: input_t) -> output_t:
 def nvfp4_gemv_asm_warp(data: input_t) -> output_t:
     a_ref, b_ref, sfa_ref_cpu, sfb_ref_cpu, _, _, c_ref = data
     nvfp4_gemv_module.nvfp4_gemv_asmload_warp(a_ref, b_ref, sfa_ref_cpu.cuda(), sfb_ref_cpu.cuda(), c_ref)
+    return c_ref
+
+
+def nvfp4_gemv_reg_tile(data: input_t) -> output_t:
+    a_ref, b_ref, sfa_ref_cpu, sfb_ref_cpu, _, _, c_ref = data
+    nvfp4_gemv_module.nvfp4_gemv_reg_tile(a_ref, b_ref, sfa_ref_cpu.cuda(), sfb_ref_cpu.cuda(), c_ref)
     return c_ref

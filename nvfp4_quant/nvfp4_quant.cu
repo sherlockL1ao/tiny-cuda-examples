@@ -3,6 +3,7 @@
 #include <cuda_fp4.h>
 #include <cuda_fp8.h>
 #include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 #include <torch/extension.h>
 
 #include <cstdint>
@@ -100,7 +101,8 @@ __global__ void Nvfp4QuantizeKernelV1(
     float2 temp = __bfloat1622float2(absmax_acc);
     float  absmax = fmaxf(temp.x, temp.y);
 
-    float              scale_f = (absmax == 0.0f) ? 1.0f : (absmax / kE2M1Max);
+    float scale_f = (absmax == 0.0f) ? 1.0f : (absmax / kE2M1Max);
+
     __nv_fp8_storage_t sf_fp8 = float_to_fp8_ceil(scale_f);
 
     // write scale to global memory
@@ -169,7 +171,15 @@ std::tuple<torch::Tensor, torch::Tensor> nvfp4_quantize_launcher(const torch::Te
   constexpr int TB_SIZE = num_warps * kWarpSize;
 
   int workloads = (M * N) / kBlockSize;
-  int num_blocks = std::min(1024, (workloads + TB_SIZE - 1) / TB_SIZE);
+  // int num_blocks = std::min(1024, (workloads + TB_SIZE - 1) / TB_SIZE);
+
+  int sm_count;
+  int device;
+  cudaGetDevice(&device);
+  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
+
+  int max_blocks = sm_count * 8; // 4 or 8 are common starting points
+  int num_blocks = (int)std::min<int64_t>(max_blocks, workloads);
 
   dim3 block(TB_SIZE);
   dim3 grid(num_blocks);

@@ -13,11 +13,10 @@ constexpr int   kBlockSize = 16;
 constexpr float kE2M1Max = 6.0f;
 constexpr float kE4M3Max = 448.0f;
 
-
 __device__ void ldcs_i32x4(uint32_t* dst, const void* src) {
   asm volatile("ld.global.L1::no_allocate.v4.b32 {%0, %1, %2, %3}, [%4];"
-              : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
-              : "l"(src));
+               : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
+               : "l"(src));
 }
 
 __device__ __forceinline__ void stg_i32x2(void* dst, uint32_t a, uint32_t b) {
@@ -37,10 +36,25 @@ __device__ __forceinline__ uint8_t quant_pack2_nvfp4_e2m1(__nv_bfloat162 a, floa
   return static_cast<uint8_t>(p);
 }
 
+__device__ __forceinline__ __nv_fp8_storage_t float_to_fp8_ceil(float x) {
+  x = fmaxf(x, 0.0f);
+
+  __nv_fp8_storage_t y = __nv_cvt_float_to_fp8(x, __NV_SATFINITE, __NV_E4M3);
+
+  __nv_fp8_e4m3 t;
+  t.__x = y;
+  float yf = (float)t;
+
+  // E4M3 没有 Inf，最大有限值编码是 0x7E；0x7F/0xFF 是 NaN 区
+  if (yf < x && y < (__nv_fp8_storage_t)0x7E) {
+    y = (__nv_fp8_storage_t)(y + 1);
+  }
+  return y;
+}
+
 //=============================================================================
 // Quantize Kernel (Stub)
 //=============================================================================
-template <int NUM_WARPS>
 __global__ void Nvfp4QuantizeKernelV1(
     const __nv_bfloat16* __restrict__ x,
     uint8_t* __restrict__ nvfp4_x,
@@ -49,8 +63,6 @@ __global__ void Nvfp4QuantizeKernelV1(
     const int N) {
   int tid = threadIdx.x; // 0..256
   int global_idx = (blockIdx.x * blockDim.x + tid) * kBlockSize;
-
-  constexpr int TB_SIZE = NUM_WARPS * kWarpSize;
 
   {
     int x_off = global_idx;
@@ -88,18 +100,16 @@ __global__ void Nvfp4QuantizeKernelV1(
     float2 temp = __bfloat1622float2(absmax_acc);
     float  absmax = fmaxf(temp.x, temp.y);
 
-    float scale_f = (absmax == 0.0f) ? 1.0f : (kE2M1Max / absmax);
-    // TODO(xingyu): consider to use round-up
-    __nv_fp8_storage_t scale_fp8 = __nv_cvt_float_to_fp8(scale_f, __NV_SATFINITE, __NV_E4M3);
+    float              scale_f = (absmax == 0.0f) ? 1.0f : (absmax / kE2M1Max);
+    __nv_fp8_storage_t sf_fp8 = float_to_fp8_ceil(scale_f);
 
     // write scale to global memory
-    // TODO(xingyu): vector store
-    block_sf[0].__x = scale_fp8;
+    block_sf[0].__x = sf_fp8;
 
     // Quantize & packing
     __nv_fp8_e4m3 sf_v;
-    sf_v.__x = scale_fp8;
-    float sf_used = (float)sf_v;
+    sf_v.__x = sf_fp8;
+    float sf_used = 1.0f / (float)sf_v;
 
     uint32_t packed[2];
     for (int k = 0; k < 2; ++k) {
@@ -163,7 +173,7 @@ std::tuple<torch::Tensor, torch::Tensor> nvfp4_quantize_launcher(const torch::Te
 
   dim3 block(TB_SIZE);
   dim3 grid(num_blocks);
-  Nvfp4QuantizeKernelV1<num_warps><<<grid, block>>>(
+  Nvfp4QuantizeKernelV1<<<grid, block>>>(
       reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
       nvfp4_x.data_ptr<uint8_t>(),
       reinterpret_cast<__nv_fp8_e4m3*>(block_sf.data_ptr()),

@@ -13,13 +13,6 @@ constexpr int   kBlockSize = 16;
 constexpr float kE2M1Max = 6.0f;
 constexpr float kE4M3Max = 448.0f;
 
-__device__ void ldcs_i32x8(uint32_t* dst, const void* src) {
-  asm volatile(
-      "ld.global.L1::no_allocate.L2::evict_first.v8.b32 "
-      "{%0, %1, %2, %3, %4, %5, %6, %7}, [%8];\n"
-      : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3]), "=r"(dst[4]), "=r"(dst[5]), "=r"(dst[6]), "=r"(dst[7])
-      : "l"(src));
-}
 
 __device__ void ldcs_i32x4(uint32_t* dst, const void* src) {
   asm volatile("ld.global.L1::no_allocate.v4.b32 {%0, %1, %2, %3}, [%4];"
@@ -27,8 +20,11 @@ __device__ void ldcs_i32x4(uint32_t* dst, const void* src) {
               : "l"(src));
 }
 
-__device__ __forceinline__ uint8_t quant_pack2_nvfp4_e2m1(__nv_bfloat162 a, float scale) {
+__device__ __forceinline__ void stg_i32x2(void* dst, uint32_t a, uint32_t b) {
+  asm volatile("st.global.v2.b32 [%0], {%1, %2};" : : "l"(dst), "r"(a), "r"(b) : "memory");
+}
 
+__device__ __forceinline__ uint8_t quant_pack2_nvfp4_e2m1(__nv_bfloat162 a, float scale) {
   // 1) apply scale in float
   float2 f = __bfloat1622float2(a);
   f.x *= scale;
@@ -67,7 +63,10 @@ __global__ void Nvfp4QuantizeKernelV1(
     block_sf += sf_off;
   }
 
-  int grid_stride = gridDim.x * TB_SIZE * kBlockSize;
+  int grid_stride = gridDim.x * blockDim.x * kBlockSize;
+  int stride_x_elems = grid_stride;
+  int stride_nvfp4_elems = grid_stride / 2;
+  int stride_sf_elems = grid_stride / kBlockSize;
   int num_iters = (M * N + grid_stride - 1) / grid_stride;
 
   uint32_t frag_x[2][4];
@@ -97,22 +96,27 @@ __global__ void Nvfp4QuantizeKernelV1(
     // TODO(xingyu): vector store
     block_sf[0].__x = scale_fp8;
 
-    // Quantize
-    // float scale_used = (float)scale_fp8;
+    // Quantize & packing
     __nv_fp8_e4m3 sf_v;
     sf_v.__x = scale_fp8;
     float sf_used = (float)sf_v;
-    for (int j = 0; j < 8; ++j) {
-      __nv_bfloat162 val = *reinterpret_cast<__nv_bfloat162*>(&frag_x[j / 4][j % 4]);
 
-      uint8_t nvfp4x2 = quant_pack2_nvfp4_e2m1(val, sf_used);
-      nvfp4_x[j] = nvfp4x2;
+    uint32_t packed[2];
+    for (int k = 0; k < 2; ++k) {
+      uint32_t b0 = quant_pack2_nvfp4_e2m1(*reinterpret_cast<__nv_bfloat162*>(&frag_x[k][0]), sf_used);
+      uint32_t b1 = quant_pack2_nvfp4_e2m1(*reinterpret_cast<__nv_bfloat162*>(&frag_x[k][1]), sf_used);
+      uint32_t b2 = quant_pack2_nvfp4_e2m1(*reinterpret_cast<__nv_bfloat162*>(&frag_x[k][2]), sf_used);
+      uint32_t b3 = quant_pack2_nvfp4_e2m1(*reinterpret_cast<__nv_bfloat162*>(&frag_x[k][3]), sf_used);
+
+      packed[k] = (b0 & 0xFF) | ((b1 & 0xFF) << 8) | ((b2 & 0xFF) << 16) | ((b3 & 0xFF) << 24);
     }
 
-    x += grid_stride;
-    nvfp4_x += grid_stride / 2;
-    block_sf += grid_stride / kBlockSize;
-    global_idx += grid_stride;
+    stg_i32x2(nvfp4_x, packed[0], packed[1]);
+
+    x += stride_x_elems;
+    nvfp4_x += stride_nvfp4_elems;
+    block_sf += stride_sf_elems;
+    global_idx += stride_x_elems;
   }
 }
 

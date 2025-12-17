@@ -21,6 +21,12 @@ __device__ void ldcs_i32x8(uint32_t* dst, const void* src) {
       : "l"(src));
 }
 
+__device__ void ldcs_i32x4(uint32_t* dst, const void* src) {
+  asm volatile("ld.global.L1::no_allocate.v4.b32 {%0, %1, %2, %3}, [%4];"
+              : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
+              : "l"(src));
+}
+
 __device__ __forceinline__ uint8_t quant_pack2_nvfp4_e2m1(__nv_bfloat162 a, float scale) {
 
   // 1) apply scale in float
@@ -64,18 +70,19 @@ __global__ void Nvfp4QuantizeKernelV1(
   int grid_stride = gridDim.x * TB_SIZE * kBlockSize;
   int num_iters = (M * N + grid_stride - 1) / grid_stride;
 
-  uint32_t frag_x[8];
+  uint32_t frag_x[2][4];
 
 #pragma unroll
   for (int i = 0; i < num_iters; ++i) {
     if (global_idx >= M * N) break;
 
-    ldcs_i32x8(frag_x, x);
+    ldcs_i32x4(frag_x[0], x);
+    ldcs_i32x4(frag_x[1], x + 8);
     // compute absmax
     __nv_bfloat162 absmax_acc = __floats2bfloat162_rn(0.0f, 0.0f);
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
-      __nv_bfloat162 val = *reinterpret_cast<__nv_bfloat162*>(&frag_x[j]);
+      __nv_bfloat162 val = *reinterpret_cast<__nv_bfloat162*>(&frag_x[j / 4][j % 4]);
       val = __habs2(val);
       absmax_acc = __hmax2(absmax_acc, val);
     }
@@ -87,14 +94,18 @@ __global__ void Nvfp4QuantizeKernelV1(
     __nv_fp8_storage_t scale_fp8 = __nv_cvt_float_to_fp8(scale_f, __NV_SATFINITE, __NV_E4M3);
 
     // write scale to global memory
+    // TODO(xingyu): vector store
     block_sf[0].__x = scale_fp8;
 
     // Quantize
-    float scale_used = (float)scale_fp8;
+    // float scale_used = (float)scale_fp8;
+    __nv_fp8_e4m3 sf_v;
+    sf_v.__x = scale_fp8;
+    float sf_used = (float)sf_v;
     for (int j = 0; j < 8; ++j) {
-      __nv_bfloat162 val = *reinterpret_cast<__nv_bfloat162*>(&frag_x[j]);
+      __nv_bfloat162 val = *reinterpret_cast<__nv_bfloat162*>(&frag_x[j / 4][j % 4]);
 
-      uint8_t nvfp4x2 = quant_pack2_nvfp4_e2m1(val, scale_used);
+      uint8_t nvfp4x2 = quant_pack2_nvfp4_e2m1(val, sf_used);
       nvfp4_x[j] = nvfp4x2;
     }
 

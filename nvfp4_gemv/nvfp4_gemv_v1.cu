@@ -16,7 +16,6 @@ __device__ __forceinline__ float warp_reduce_sum(float sum) {
   return sum;
 }
 
-
 __device__ __forceinline__ void fp4x8_to_fp16x2x4(uint32_t* out, uint32_t in) {
   asm volatile("{\n\t"
                ".reg .b8 tmp0, tmp1, tmp2, tmp3;\n\t"
@@ -70,18 +69,17 @@ __global__ void Nvfp4GemvRegTile(
     const int SF_K) {
   int tid = threadIdx.x;
   int tid_k = tid % THREADS_K; // 0..31
-  int tid_m = tid / THREADS_K;
+  int tid_m = tid / THREADS_K; // 0..3 for NUM_WARPS=4, THREADS_K=32
 
-  constexpr int FP4X2_PER_LOAD = 16; // 4 x int32 = 128 bit = 16 bytes
+  constexpr int BYTES_PER_LOAD = 16; // 4 x int32 = 128 bit = 16 bytes
   constexpr int TB_SIZE = NUM_WARPS * WARPSIZE;
   constexpr int THREADS_M = TB_SIZE / THREADS_K;
   constexpr int ROWS_PER_THREAD = BLOCK_M / THREADS_M; // each thread process strided rows
 
-  constexpr int K_CHUNKS_PER_THREAD = BLOCK_K / FP4X2_PER_LOAD / THREADS_K;
+  constexpr int K_CHUNKS_PER_THREAD = BLOCK_K / BYTES_PER_LOAD / THREADS_K;
 
-  int current_row = blockIdx.x * BLOCK_M + tid_m * ROWS_PER_THREAD;
+  int current_row = blockIdx.x * BLOCK_M;
   int current_batch = blockIdx.y;
-  if (current_row >= M) return;
 
   auto a_ptr = static_cast<const __nv_fp4x2_e2m1*>(a);
   auto b_ptr = static_cast<const __nv_fp4x2_e2m1*>(b);
@@ -94,7 +92,7 @@ __global__ void Nvfp4GemvRegTile(
     a_ptr += a_off;
     b_ptr += b_off;
 
-    int sfa_off = current_batch * M * SF_K+ current_row * SF_K;
+    int sfa_off = current_batch * M * SF_K + current_row * SF_K;
     int sfb_off = current_batch * 128 * SF_K;
     sfa_ptr += sfa_off;
     sfb_ptr += sfb_off;
@@ -102,20 +100,108 @@ __global__ void Nvfp4GemvRegTile(
 
   // data registers
   uint32_t frag_A[ROWS_PER_THREAD][K_CHUNKS_PER_THREAD][4];
+  uint32_t frag_A_h2[ROWS_PER_THREAD][K_CHUNKS_PER_THREAD][4][/*8xfp4->4xh2 */ 4];
+  uint32_t frag_B[K_CHUNKS_PER_THREAD][4];
+  uint32_t frag_B_h2[K_CHUNKS_PER_THREAD][4][4];
+  uint16_t frag_sfa[ROWS_PER_THREAD][K_CHUNKS_PER_THREAD][1];
+  uint16_t frag_sfb[K_CHUNKS_PER_THREAD][1];
+  __half2  frag_sfb_h2[K_CHUNKS_PER_THREAD][1];
+  __half2  frag_sfa_h2[ROWS_PER_THREAD][K_CHUNKS_PER_THREAD][1];
 
-  int num_iters = (K + BLOCK_K - 1) / BLOCK_K;
-  for (int i = 0; i < num_iters; ++i) {
-#pragma unroll
-    for (int m = 0; m < ROWS_PER_THREAD; ++m) {
-      for (int k = 0; k < K_CHUNKS_PER_THREAD; ++k) {
+  float master_acc[ROWS_PER_THREAD] = {};
+
+  auto gmem_to_rmem = [&]() {
+    for (int k = 0; k < K_CHUNKS_PER_THREAD; ++k) {
+      const int idx_k = k * THREADS_K + tid_k;
+      ldca_i32x4(frag_B[k], b_ptr + idx_k * BYTES_PER_LOAD);
+      ldca_i16(frag_sfb[k], sfb_ptr + idx_k * /*2 fp8 scale*/ 2); // 32 fp4 with block_size=16
+
+      for (int m = 0; m < ROWS_PER_THREAD; ++m) {
         const int idx_m = m * THREADS_M + tid_m;
-        const int idx_k = k * THREADS_K + tid_k;
-        ldcs_i32x4(frag_A[m][k], a_ptr + idx_m * K + idx_k * FP4X2_PER_LOAD);
+        ldcs_i32x4(frag_A[m][k], a_ptr + idx_m * K + idx_k * BYTES_PER_LOAD);
+        ldcs_i16(frag_sfa[m][k], sfa_ptr + idx_m * SF_K + idx_k * 2);
+      }
+    }
+  };
+
+  auto unpack_and_convert = [&]() {
+    for (int k = 0; k < K_CHUNKS_PER_THREAD; ++k) {
+      fp8x2_to_fp16x2(frag_sfb_h2[k], frag_sfb[k][0]);
+      for (int n = 0; n < 4; ++n) {
+        fp4x8_to_fp16x2x4(frag_B_h2[k][n], frag_B[k][n]);
+      }
+
+      for (int m = 0; m < ROWS_PER_THREAD; ++m) {
+        fp8x2_to_fp16x2(frag_sfa_h2[m][k], frag_sfa[m][k][0]);
+        for (int n = 0; n < 4; ++n) {
+          fp4x8_to_fp16x2x4(frag_A_h2[m][k][n], frag_A[m][k][n]);
+        }
+      }
+    }
+  };
+
+  auto compute = [&]() {
+    __half2_raw sf_prod[ROWS_PER_THREAD][K_CHUNKS_PER_THREAD];
+    // pre-compute scale factors multiplication
+    for (int k = 0; k < K_CHUNKS_PER_THREAD; ++k) {
+      for (int m = 0; m < ROWS_PER_THREAD; ++m) {
+        sf_prod[m][k] = __hmul2(frag_sfa_h2[m][k][0], frag_sfb_h2[k][0]);
       }
     }
 
-    a_ptr += i * BLOCK_K;
-    b_ptr += i * BLOCK_K;
+    __half2 acc[ROWS_PER_THREAD][2] = {};
+    for (int k = 0; k < K_CHUNKS_PER_THREAD; ++k) {
+      for (int m = 0; m < ROWS_PER_THREAD; ++m) {
+        for (int e = 0; e < 4; ++e) {
+          for (int i = 0; i < 2; ++i) {
+            __half2 a_h2 = *reinterpret_cast<const __half2*>(frag_A_h2[m][k][i][e]);
+            __half2 b_h2 = *reinterpret_cast<const __half2*>(frag_B_h2[k][i][e]);
+            acc[m][0] = __hfma2(a_h2, b_h2, acc[m][0]);
+          }
+
+          for (int i = 2; i < 4; ++i) {
+            __half2 a_h2 = *reinterpret_cast<const __half2*>(frag_A_h2[m][k][i][e]);
+            __half2 b_h2 = *reinterpret_cast<const __half2*>(frag_B_h2[k][i][e]);
+            acc[m][1] = __hfma2(a_h2, b_h2, acc[m][1]);
+          }
+        }
+        __half_raw group0 = __hadd(acc[m][0].x, acc[m][0].y);
+        __half_raw group1 = __hadd(acc[m][1].x, acc[m][1].y);
+
+        asm volatile("fma.rn.f32.f16 %0, %1, %2, %0;" : "+f"(master_acc[m]) : "h"(group0.x), "h"(sf_prod[m][k].x));
+        asm volatile("fma.rn.f32.f16 %0, %1, %2, %0;" : "+f"(master_acc[m]) : "h"(group1.x), "h"(sf_prod[m][k].y));
+
+        for (int i = 0; i < 2; ++i) {
+          acc[m][i] = __float2half2_rn(0.0f);
+        }
+      }
+    }
+  };
+
+  int num_iters = (K + BLOCK_K - 1) / BLOCK_K;
+#pragma unroll
+  for (int i = 0; i < num_iters; ++i) {
+    gmem_to_rmem();
+    unpack_and_convert();
+    compute();
+
+    a_ptr += BLOCK_K;
+    b_ptr += BLOCK_K;
+    sfa_ptr += BLOCK_K / 8;
+    sfb_ptr += BLOCK_K / 8;
+  }
+
+  for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+    master_acc[i] = warp_reduce_sum<32>(master_acc[i]);
+  }
+  if (tid_k == 0) {
+    for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+      int row = current_row + i * THREADS_M + tid_m;
+      if (row < M) {
+        __half* out_ptr = static_cast<__half*>(out) + current_batch * M + row;
+        out_ptr[0] = __float2half(master_acc[i]);
+      }
+    }
   }
 }
 

@@ -6,6 +6,7 @@
 
 constexpr int WARPSIZE = 32;
 
+#ifndef NVFP4_GEMV_COMMON_HELPERS_DEFINED
 template <unsigned int warp_size>
 __device__ __forceinline__ float warp_reduce_sum(float sum) {
   if (warp_size >= 32) sum += __shfl_down_sync(0xffffffff, sum, 16);
@@ -55,6 +56,8 @@ __device__ __forceinline__ void ldca_i32x4(uint32_t* dst, const void* src) {
                : "=r"(dst[0]), "=r"(dst[1]), "=r"(dst[2]), "=r"(dst[3])
                : "l"(src));
 }
+
+#endif
 
 template <int BLOCK_M, int BLOCK_K, int THREADS_K, int NUM_WARPS>
 __global__ void Nvfp4GemvRegTile(

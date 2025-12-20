@@ -68,6 +68,8 @@ __device__ __forceinline__ void ldca_i32x4(uint32_t* dst, const void* src) {
                : "l"(src));
 }
 
+#define NVFP4_GEMV_COMMON_HELPERS_DEFINED 1
+
 __global__ void Nvfp4gemvNaive(
     const void* __restrict__ a,
     const void* __restrict__ b,

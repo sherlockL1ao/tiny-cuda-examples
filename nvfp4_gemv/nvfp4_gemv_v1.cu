@@ -157,17 +157,18 @@ __global__ void Nvfp4GemvRegTile(
       for (int m = 0; m < ROWS_PER_THREAD; ++m) {
         for (int e = 0; e < 4; ++e) {
           for (int i = 0; i < 2; ++i) {
-            __half2 a_h2 = *reinterpret_cast<const __half2*>(frag_A_h2[m][k][i][e]);
-            __half2 b_h2 = *reinterpret_cast<const __half2*>(frag_B_h2[k][i][e]);
+            __half2 a_h2 = *reinterpret_cast<const __half2*>(&frag_A_h2[m][k][i][e]);
+            __half2 b_h2 = *reinterpret_cast<const __half2*>(&frag_B_h2[k][i][e]);
             acc[m][0] = __hfma2(a_h2, b_h2, acc[m][0]);
           }
 
           for (int i = 2; i < 4; ++i) {
-            __half2 a_h2 = *reinterpret_cast<const __half2*>(frag_A_h2[m][k][i][e]);
-            __half2 b_h2 = *reinterpret_cast<const __half2*>(frag_B_h2[k][i][e]);
+            __half2 a_h2 = *reinterpret_cast<const __half2*>(&frag_A_h2[m][k][i][e]);
+            __half2 b_h2 = *reinterpret_cast<const __half2*>(&frag_B_h2[k][i][e]);
             acc[m][1] = __hfma2(a_h2, b_h2, acc[m][1]);
           }
         }
+
         __half_raw group0 = __hadd(acc[m][0].x, acc[m][0].y);
         __half_raw group1 = __hadd(acc[m][1].x, acc[m][1].y);
 

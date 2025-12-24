@@ -207,8 +207,34 @@ __global__ void Nvfp4GemvRegTile(
     sfb_ptr += BLOCK_K / 8;
   }
 
-  for (int i = 0; i < ROWS_PER_THREAD; ++i) {
-    master_acc[i] = warp_reduce_sum<THREADS_K>(master_acc[i]);
+  if constexpr (THREADS_K > WARPSIZE) { // cross-warp reduction
+    __shared__ float smem[ROWS_PER_THREAD][THREADS_M][THREADS_K];
+    for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+      smem[i][tid_m][tid_k] = master_acc[i];
+    }
+    __syncthreads();
+    for (int stride = THREADS_K / 2; stride >= WARPSIZE; stride /= 2) {
+      if (tid_k < stride) {
+        for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+          smem[i][tid_m][tid_k] += smem[i][tid_m][tid_k + stride];
+        }
+      }
+      __syncthreads();
+    }
+    for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+      if (tid_k < WARPSIZE) {
+        master_acc[i] = smem[i][tid_m][tid_k];
+      }
+    }
+
+    for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+      master_acc[i] = warp_reduce_sum<WARPSIZE>(master_acc[i]);
+    }
+  } else {
+
+    for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+      master_acc[i] = warp_reduce_sum<THREADS_K>(master_acc[i]);
+    }
   }
   if (tid_k == 0) {
     for (int i = 0; i < ROWS_PER_THREAD; ++i) {
@@ -236,8 +262,8 @@ torch::Tensor nvfp4_gemv_reg_tile_launcher(
   constexpr int TB_SIZE = NUM_WARPS * WARPSIZE; // 4 warps per block, 128 threads
 
   constexpr int BLOCK_M = 8;
-  constexpr int BLOCK_K = 512; // one block, number of bytes to process along k
-  constexpr int THREADS_K = 32;
+  constexpr int BLOCK_K = 1024; // one block, number of bytes to process along k
+  constexpr int THREADS_K = BLOCK_K / 16;
 
   dim3 block(TB_SIZE);
   dim3 grid((m + BLOCK_M - 1) / BLOCK_M, l);

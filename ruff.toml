@@ -1,4 +1,4 @@
-indent-width = 2
+indent-width = 4
 preview = true
 target-version = "py310"
 

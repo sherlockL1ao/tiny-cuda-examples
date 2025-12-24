@@ -116,6 +116,18 @@ __global__ void Nvfp4GemvRegTile(
   auto gmem_to_rmem = [&]() {
     for (int k = 0; k < K_CHUNKS_PER_THREAD; ++k) {
       const int idx_k = k * THREADS_K + tid_k;
+      const int global_k_byte = idx_k * BYTES_PER_LOAD;
+      // Skip if this chunk is out of bounds (for K < BLOCK_K cases)
+      if (global_k_byte >= K) {
+        // Zero-fill the registers to avoid garbage accumulation
+        frag_B[k][0] = frag_B[k][1] = frag_B[k][2] = frag_B[k][3] = 0;
+        frag_sfb[k][0] = 0;
+        for (int m = 0; m < ROWS_PER_THREAD; ++m) {
+          frag_A[m][k][0] = frag_A[m][k][1] = frag_A[m][k][2] = frag_A[m][k][3] = 0;
+          frag_sfa[m][k][0] = 0;
+        }
+        continue;
+      }
       ldca_i32x4(frag_B[k], b_ptr + idx_k * BYTES_PER_LOAD);
       ldca_i16(frag_sfb[k], sfb_ptr + idx_k * /*2 fp8 scale*/ 2); // 32 fp4 with block_size=16
 
@@ -196,7 +208,7 @@ __global__ void Nvfp4GemvRegTile(
   }
 
   for (int i = 0; i < ROWS_PER_THREAD; ++i) {
-    master_acc[i] = warp_reduce_sum<32>(master_acc[i]);
+    master_acc[i] = warp_reduce_sum<THREADS_K>(master_acc[i]);
   }
   if (tid_k == 0) {
     for (int i = 0; i < ROWS_PER_THREAD; ++i) {

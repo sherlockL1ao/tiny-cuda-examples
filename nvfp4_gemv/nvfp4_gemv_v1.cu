@@ -208,11 +208,35 @@ __global__ void Nvfp4GemvRegTile(
   }
 
   if constexpr (THREADS_K > WARPSIZE) { // cross-warp reduction
+    // constexpr int    NUM_WARPS_K = THREADS_K / WARPSIZE;
+    // __shared__ float smem[ROWS_PER_THREAD][THREADS_M][NUM_WARPS_K];
+    // for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+    //   master_acc[i] = warp_reduce_sum<WARPSIZE>(master_acc[i]);
+    // }
+    // int lane_id = tid_k % WARPSIZE;
+    // int warp_id = tid_k / WARPSIZE;
+    // for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+    //   if (lane_id == 0) {
+    //     smem[i][tid_m][warp_id] = master_acc[i];
+    //   }
+    // }
+    // __syncthreads();
+
+    // for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+    //   master_acc[i] = 0.0f;
+    // }
+    // for (int i = 0; i < ROWS_PER_THREAD; ++i) {
+    //   for (int j = 0; j < NUM_WARPS_K; ++j) {
+    //     master_acc[i] += smem[i][tid_m][j];
+    //   }
+    // }
+
     __shared__ float smem[ROWS_PER_THREAD][THREADS_M][THREADS_K];
     for (int i = 0; i < ROWS_PER_THREAD; ++i) {
       smem[i][tid_m][tid_k] = master_acc[i];
     }
     __syncthreads();
+
     for (int stride = THREADS_K / 2; stride >= WARPSIZE; stride /= 2) {
       if (tid_k < stride) {
         for (int i = 0; i < ROWS_PER_THREAD; ++i) {

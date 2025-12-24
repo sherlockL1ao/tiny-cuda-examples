@@ -60,7 +60,7 @@ __device__ __forceinline__ void ldca_i32x4(uint32_t* dst, const void* src) {
 #endif
 
 template <int BLOCK_M, int BLOCK_K, int THREADS_K, int NUM_WARPS>
-__global__ void Nvfp4GemvRegTile(
+__global__ void __launch_bounds__(NUM_WARPS* WARPSIZE) Nvfp4GemvRegTile(
     const void* __restrict__ a,
     const void* __restrict__ b,
     const void* __restrict__ scale_a,

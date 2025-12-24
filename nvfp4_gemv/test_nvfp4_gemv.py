@@ -34,7 +34,7 @@ def time_pytorch_function(func, data):
   return start.elapsed_time(end) # Return the elapsed time in milliseconds
 
 
-m, k, l = 256, 1024, 8
+m, k, l = 128, 4096, 8
 
 data_ref = generate_input(m=m, k=k, l=l, seed=42)
 # ref_out = ref_kernel(data_ref)

@@ -4,8 +4,8 @@ CompileFlags:
     - --cuda-path=/usr/local/cuda
     - --cuda-gpu-arch=sm_120
     - -I/usr/local/cuda/include
-    - -I/workspace/tiny-cuda-examples/.venv/lib/python3.10/site-packages/torch/include
-    - -I/workspace/tiny-cuda-examples/.venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include
+    - -I/workspace/tinykernels/.venv/lib/python3.10/site-packages/torch/include
+    - -I/workspace/tinykernels/.venv/lib/python3.10/site-packages/torch/include/torch/csrc/api/include
     - -I/usr/include/python3.10
   Remove:
     - -forward-unknown-to-host-compiler

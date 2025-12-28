@@ -57,8 +57,7 @@ sgemm_smem_tile_kernel(const float* __restrict__ A, const float* __restrict__ B,
     C += C_offs;
   }
 
-  float acc = 0.0f;
-  for (int i = 0; i < K / BLOCK_K; ++i) {
+  auto gmem_to_smem = [&]() {
     // load A global memory to shared memory
     for (int j = 0; j < AsLoadIter; ++j) {
       int index = tid + j * TB_SIZE;
@@ -73,14 +72,22 @@ sgemm_smem_tile_kernel(const float* __restrict__ A, const float* __restrict__ B,
       int Bs_n_idx = index % BLOCK_N;
       Bs[Bs_k_idx][Bs_n_idx] = B[Bs_k_idx * N + Bs_n_idx];
     }
-    __syncthreads();
+  };
 
+  float acc = 0.0f;
+  auto  compute = [&]() {
     // compute
     for (int ki = 0; ki < BLOCK_K; ++ki) {
       float a_val = As[tid_m][ki];
       float b_val = Bs[ki][tid_n];
       acc += a_val * b_val;
     }
+  };
+
+  for (int i = 0; i < K / BLOCK_K; ++i) {
+    gmem_to_smem();
+    __syncthreads();
+    compute();
     __syncthreads();
     // next iter
     A += BLOCK_K;

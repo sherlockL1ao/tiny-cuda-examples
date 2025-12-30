@@ -97,6 +97,74 @@ sgemm_smem_tile_kernel(const float* __restrict__ A, const float* __restrict__ B,
   C[tid_m * N + tid_n] = acc;
 }
 
+template <int BLOCK_M, int BLOCK_N, int BLOCK_K, int THREADS_M, int NUM_WARPS>
+__global__ void
+sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, float* C, int M, int K, int N) {
+  __shared__ float smem_A[BLOCK_M][BLOCK_K];
+  __shared__ float smem_B[BLOCK_K][BLOCK_N];
+
+  constexpr int TB_SIZE = NUM_WARPS * WARP_SIZE;
+  constexpr int THREADS_N = TB_SIZE / THREADS_M;
+  constexpr int TM = BLOCK_M / THREADS_M;
+  constexpr int TN = BLOCK_N / THREADS_N;
+
+  constexpr int AsLoadIter = (BLOCK_M * BLOCK_K) / TB_SIZE;
+  constexpr int BsLoadIter = (BLOCK_K * BLOCK_N) / TB_SIZE;
+
+  int tid = threadIdx.x;
+  // int tid_k = tid % THREADS_K; // 0..31
+  // int tid_mn = tid / THREADS_K; // 0..3 for NUM_WARPS=4
+
+  // pointers move of A and B, save registers
+  {
+    int bid = blockIdx.x;
+    int grid_n = (N + BLOCK_N - 1) / BLOCK_N;
+    int A_offs = bid / grid_n * BLOCK_M * K;
+    int B_offs = bid % grid_n * BLOCK_N;
+    A += A_offs;
+    B += B_offs;
+
+    int C_offs = bid / grid_n * BLOCK_M * N + bid % grid_n * BLOCK_N;
+    C += C_offs;
+  }
+
+  // data registers
+  float frag_A[TM];
+  float frag_B[TN];
+  float acc[TM][TN] = {};
+
+  auto gmem_to_smem = [&]() {
+    // load A global memory to shared memory
+    for (int j = 0; j < AsLoadIter; ++j) {
+      int index = tid + j * TB_SIZE;
+      int As_m_idx = index / BLOCK_K;
+      int As_k_idx = index % BLOCK_K;
+      smem_A[As_m_idx][As_k_idx] = A[As_m_idx * K + As_k_idx];
+    }
+    // load B global memory to shared memory
+    for (int j = 0; j < BsLoadIter; ++j) {
+      int index = tid + j * TB_SIZE;
+      int Bs_k_idx = index / BLOCK_N;
+      int Bs_n_idx = index % BLOCK_N;
+      smem_B[Bs_k_idx][Bs_n_idx] = B[Bs_k_idx * N + Bs_n_idx];
+    }
+  };
+
+  auto smem_to_frag = [&]() {
+
+  };
+
+  for (int i = 0; i < K / BLOCK_K; ++i) {
+    gmem_to_smem();
+    __syncthreads();
+    smem_to_frag();
+
+    A += BLOCK_K;
+    B += BLOCK_K * N;
+  }
+
+}
+
 // Launcher function
 torch::Tensor sgemm_launcher(torch::Tensor A, torch::Tensor B) {
   TORCH_CHECK(A.is_cuda(), "A must be a CUDA tensor");

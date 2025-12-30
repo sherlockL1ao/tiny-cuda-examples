@@ -116,12 +116,14 @@ torch::Tensor sgemm_launcher(torch::Tensor A, torch::Tensor B) {
   const int N = rhs.size(1);
 
   constexpr int BLOCK_M = 16;
-  constexpr int BLOCK_N = 16;
+  constexpr int BLOCK_N = 8;
   constexpr int BLOCK_K = 64;
 
   torch::Tensor C = torch::empty({M, N}, lhs.options());
 
-  constexpr int NUM_WARPS = 8;
+  constexpr int NUM_WARPS = 4;
+  constexpr int TB_SIZE = NUM_WARPS * WARP_SIZE;
+  static_assert(BLOCK_M * BLOCK_N == TB_SIZE, "BLOCK_M * BLOCK_N must equal TB_SIZE");
 
   dim3 block(NUM_WARPS * WARP_SIZE);
   dim3 grid((M * N + block.x - 1) / block.x);

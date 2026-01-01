@@ -108,12 +108,12 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
   constexpr int TM = BLOCK_M / THREADS_M;
   constexpr int TN = BLOCK_N / THREADS_N;
 
-  constexpr int AsLoadIter = (BLOCK_M * BLOCK_K) / TB_SIZE;
-  constexpr int BsLoadIter = (BLOCK_K * BLOCK_N) / TB_SIZE;
+  constexpr int A_SMEM_LOAD_ITERS = (BLOCK_M * BLOCK_K) / TB_SIZE;
+  constexpr int B_SMEM_LOAD_ITERS = (BLOCK_K * BLOCK_N) / TB_SIZE;
 
   int tid = threadIdx.x;
-  // int tid_k = tid % THREADS_K; // 0..31
-  // int tid_mn = tid / THREADS_K; // 0..3 for NUM_WARPS=4
+  int tid_m = tid / THREADS_N; // 0..3 for NUM_WARPS=4
+  int tid_n = tid % THREADS_N; // 0..31
 
   // pointers move of A and B, save registers
   {
@@ -128,21 +128,17 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
     C += C_offs;
   }
 
-  // data registers
-  float frag_A[TM];
-  float frag_B[TN];
-  float acc[TM][TN] = {};
 
   auto gmem_to_smem = [&]() {
     // load A global memory to shared memory
-    for (int j = 0; j < AsLoadIter; ++j) {
+    for (int j = 0; j < A_SMEM_LOAD_ITERS; ++j) {
       int index = tid + j * TB_SIZE;
       int As_m_idx = index / BLOCK_K;
       int As_k_idx = index % BLOCK_K;
       smem_A[As_m_idx][As_k_idx] = A[As_m_idx * K + As_k_idx];
     }
     // load B global memory to shared memory
-    for (int j = 0; j < BsLoadIter; ++j) {
+    for (int j = 0; j < B_SMEM_LOAD_ITERS; ++j) {
       int index = tid + j * TB_SIZE;
       int Bs_k_idx = index / BLOCK_N;
       int Bs_n_idx = index % BLOCK_N;
@@ -150,19 +146,46 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
     }
   };
 
-  auto smem_to_frag = [&]() {
+  // data registers
+  float frag_A[TM];
+  float frag_B[TN];
 
+  float acc[TM][TN] = {};
+  auto  compute = [&]() {
+    for (int ki = 0; ki < BLOCK_K; ++ki) {
+      // load A fragment
+      for (int j = 0; j < TM; ++j) {
+        frag_A[j] = smem_A[j * THREADS_M + tid_m][ki];
+      }
+      // load B fragment
+      for (int j = 0; j < TN; ++j) {
+        frag_B[j] = smem_B[ki][j * THREADS_N + tid_n];
+      }
+
+      // compute acc
+      for (int m = 0; m < TM; ++m) {
+        for (int n = 0; n < TN; ++n) {
+          acc[m][n] += frag_A[m] * frag_B[n];
+        }
+      }
+    }
   };
 
   for (int i = 0; i < K / BLOCK_K; ++i) {
     gmem_to_smem();
     __syncthreads();
-    smem_to_frag();
+    compute();
+    __syncthreads();
 
     A += BLOCK_K;
     B += BLOCK_K * N;
   }
 
+  for (int m = 0; m < TM; ++m) {
+    for (int n = 0; n < TN; ++n) {
+      C[m * THREADS_M + tid_m * N + n * THREADS_N + tid_n] = acc[m][n];
+    }
+  }
 }
 
 // Launcher function
@@ -184,20 +207,20 @@ torch::Tensor sgemm_launcher(torch::Tensor A, torch::Tensor B) {
   const int N = rhs.size(1);
 
   constexpr int BLOCK_M = 16;
-  constexpr int BLOCK_N = 8;
+  constexpr int BLOCK_N = 64;
   constexpr int BLOCK_K = 64;
 
   torch::Tensor C = torch::empty({M, N}, lhs.options());
 
   constexpr int NUM_WARPS = 4;
-  constexpr int TB_SIZE = NUM_WARPS * WARP_SIZE;
-  static_assert(BLOCK_M * BLOCK_N == TB_SIZE, "BLOCK_M * BLOCK_N must equal TB_SIZE");
+  constexpr int THREADS_M = 4;
+  // constexpr int TB_SIZE = NUM_WARPS * WARP_SIZE;
 
   dim3 block(NUM_WARPS * WARP_SIZE);
   dim3 grid((M * N + block.x - 1) / block.x);
   // sgemm_naive_kernel<NUM_WARPS>
   //     <<<grid, block>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), M, K, N);
-  sgemm_smem_tile_kernel<BLOCK_M, BLOCK_N, BLOCK_K, NUM_WARPS>
+  sgemm_reg_tile_kernel<BLOCK_M, BLOCK_N, BLOCK_K, THREADS_M, NUM_WARPS>
       <<<grid, block>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), M, K, N);
 
   cudaError_t err = cudaGetLastError();

@@ -183,7 +183,9 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
 
   for (int m = 0; m < TM; ++m) {
     for (int n = 0; n < TN; ++n) {
-      C[m * THREADS_M + tid_m * N + n * THREADS_N + tid_n] = acc[m][n];
+      int row = m * THREADS_M + tid_m;
+      int col = n * THREADS_N + tid_n;
+      C[row * N + col] = acc[m][n];
     }
   }
 }
@@ -207,17 +209,17 @@ torch::Tensor sgemm_launcher(torch::Tensor A, torch::Tensor B) {
   const int N = rhs.size(1);
 
   constexpr int BLOCK_M = 16;
-  constexpr int BLOCK_N = 64;
+  constexpr int BLOCK_N = 32;
   constexpr int BLOCK_K = 64;
+  constexpr int BLOCK_MN = BLOCK_M * BLOCK_N;
 
   torch::Tensor C = torch::empty({M, N}, lhs.options());
 
   constexpr int NUM_WARPS = 4;
   constexpr int THREADS_M = 4;
-  // constexpr int TB_SIZE = NUM_WARPS * WARP_SIZE;
 
   dim3 block(NUM_WARPS * WARP_SIZE);
-  dim3 grid((M * N + block.x - 1) / block.x);
+  dim3 grid((M * N + BLOCK_MN - 1) / BLOCK_MN);
   // sgemm_naive_kernel<NUM_WARPS>
   //     <<<grid, block>>>(lhs.data_ptr<float>(), rhs.data_ptr<float>(), C.data_ptr<float>(), M, K, N);
   sgemm_reg_tile_kernel<BLOCK_M, BLOCK_N, BLOCK_K, THREADS_M, NUM_WARPS>

@@ -153,10 +153,8 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
   float frag_B[TN];
 
   float acc[TM][TN] = {};
-  auto  compute = [&](int k_iter) {
-    const int block_start_k = k_iter * BLOCK_K;
+  auto  compute = [&]() {
     for (int ki = 0; ki < BLOCK_K; ++ki) {
-      if (block_start_k + ki < K) {
       // load A fragment
       for (int j = 0; j < TM; ++j) {
         frag_A[j] = smem_A[j * THREADS_M + tid_m][ki];
@@ -172,14 +170,13 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
           acc[m][n] += frag_A[m] * frag_B[n];
         }
       }
-    }
   }
   };
 
   for (int i = 0; i < (K + BLOCK_K - 1) / BLOCK_K; ++i) {
     gmem_to_smem(i);
     __syncthreads();
-    compute(i);
+    compute();
     __syncthreads();
 
     A += BLOCK_K;

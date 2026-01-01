@@ -115,34 +115,36 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
   int tid_m = tid / THREADS_N; // 0..3 for NUM_WARPS=4
   int tid_n = tid % THREADS_N; // 0..31
 
-  // pointers move of A and B, save registers
-  {
-    int bid = blockIdx.x;
-    int grid_n = (N + BLOCK_N - 1) / BLOCK_N;
-    int A_offs = bid / grid_n * BLOCK_M * K;
-    int B_offs = bid % grid_n * BLOCK_N;
-    A += A_offs;
-    B += B_offs;
 
-    int C_offs = bid / grid_n * BLOCK_M * N + bid % grid_n * BLOCK_N;
-    C += C_offs;
-  }
+  int bid = blockIdx.x;
+  int grid_n = (N + BLOCK_N - 1) / BLOCK_N;
+  int block_start_m = bid / grid_n * BLOCK_M;
+  int block_start_n = bid % grid_n * BLOCK_N;
+  int C_offs = block_start_m * N + block_start_n;
+  // pointers move of A and B
+  A += block_start_m * K;
+  B += block_start_n;
+  C += C_offs;
 
 
-  auto gmem_to_smem = [&]() {
+  auto gmem_to_smem = [&](int k_iter) {
     // load A global memory to shared memory
     for (int j = 0; j < A_SMEM_LOAD_ITERS; ++j) {
       int index = tid + j * TB_SIZE;
-      int As_m_idx = index / BLOCK_K;
-      int As_k_idx = index % BLOCK_K;
-      smem_A[As_m_idx][As_k_idx] = A[As_m_idx * K + As_k_idx];
+      int l_m = index / BLOCK_K;
+      int l_k = index % BLOCK_K;
+      int global_m = block_start_m + l_m;
+      int global_k = k_iter * BLOCK_K + l_k;
+      smem_A[l_m][l_k] = (global_m < M && global_k < K) ? A[l_m * K + l_k] : 0.0f;
     }
     // load B global memory to shared memory
     for (int j = 0; j < B_SMEM_LOAD_ITERS; ++j) {
       int index = tid + j * TB_SIZE;
-      int Bs_k_idx = index / BLOCK_N;
-      int Bs_n_idx = index % BLOCK_N;
-      smem_B[Bs_k_idx][Bs_n_idx] = B[Bs_k_idx * N + Bs_n_idx];
+      int l_k = index / BLOCK_N;
+      int l_n = index % BLOCK_N;
+      int global_k = k_iter * BLOCK_K + l_k;
+      int global_n = block_start_n + l_n;
+      smem_B[l_k][l_n] = (global_k < K && global_n < N) ? B[l_k * N + l_n] : 0.f;
     }
   };
 
@@ -151,8 +153,10 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
   float frag_B[TN];
 
   float acc[TM][TN] = {};
-  auto  compute = [&]() {
+  auto  compute = [&](int k_iter) {
+    const int block_start_k = k_iter * BLOCK_K;
     for (int ki = 0; ki < BLOCK_K; ++ki) {
+      if (block_start_k + ki < K) {
       // load A fragment
       for (int j = 0; j < TM; ++j) {
         frag_A[j] = smem_A[j * THREADS_M + tid_m][ki];
@@ -169,12 +173,13 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
         }
       }
     }
+  }
   };
 
-  for (int i = 0; i < K / BLOCK_K; ++i) {
-    gmem_to_smem();
+  for (int i = 0; i < (K + BLOCK_K - 1) / BLOCK_K; ++i) {
+    gmem_to_smem(i);
     __syncthreads();
-    compute();
+    compute(i);
     __syncthreads();
 
     A += BLOCK_K;
@@ -185,7 +190,9 @@ sgemm_reg_tile_kernel(const float* __restrict__ A, const float* __restrict__ B, 
     for (int n = 0; n < TN; ++n) {
       int row = m * THREADS_M + tid_m;
       int col = n * THREADS_N + tid_n;
-      C[row * N + col] = acc[m][n];
+      if (row < M && col < N) {
+        C[row * N + col] = acc[m][n];
+      }
     }
   }
 }
